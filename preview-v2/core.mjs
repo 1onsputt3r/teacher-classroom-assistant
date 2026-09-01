@@ -603,6 +603,59 @@ export function validateTeachingClassDraft(draft, existingRecords = [], catalog 
   return { valid: errors.length === 0, errors, fieldErrors, record: errors.length ? null : candidate };
 }
 
+export function validateTeachingClassBatchDraft(draft, existingRecords = [], catalog = COURSE_CATALOG) {
+  const source = draft && typeof draft === 'object' && !Array.isArray(draft) ? draft : {};
+  const shared = {
+    system: source.system,
+    grade: source.grade,
+    subject: source.subject
+  };
+  const rows = Array.isArray(source.rows) ? source.rows : [];
+  const errors = [];
+  const sharedFieldErrors = {};
+  const rowFieldErrors = rows.map(() => ({}));
+  const records = [];
+  const comparisonRecords = Array.isArray(existingRecords) ? [...existingRecords] : [];
+  const sharedFields = new Set(['system', 'grade', 'subject']);
+  const seenSharedErrors = new Set();
+
+  if (!rows.length) {
+    errors.push({ field: 'rows', code: 'rows-required', message: '請至少新增一個班級。' });
+  }
+
+  rows.forEach((row, rowIndex) => {
+    const validation = validateTeachingClassDraft(
+      { ...(row && typeof row === 'object' ? row : {}), ...shared, id: '' },
+      comparisonRecords,
+      catalog
+    );
+    for (const error of validation.errors) {
+      if (sharedFields.has(error.field)) {
+        const key = `${error.field}:${error.code}:${error.message}`;
+        if (seenSharedErrors.has(key)) continue;
+        seenSharedErrors.add(key);
+        errors.push(error);
+        sharedFieldErrors[error.field] ||= error.message;
+      } else {
+        errors.push({ ...error, rowIndex, message: `第 ${rowIndex + 1} 列：${error.message}` });
+        rowFieldErrors[rowIndex][error.field] ||= validation.fieldErrors[error.field] || error.message;
+      }
+    }
+    if (validation.valid) {
+      records.push(validation.record);
+      comparisonRecords.push(validation.record);
+    }
+  });
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    sharedFieldErrors,
+    rowFieldErrors,
+    records: errors.length ? [] : records
+  };
+}
+
 export function upsertTeachingClassForAcademicYear(settings, academicYear, record, catalog = COURSE_CATALOG) {
   const year = validTeachingAcademicYear(academicYear);
   const normalizedRecord = normalizedTeachingClassRecord(record, catalog);
@@ -617,6 +670,15 @@ export function upsertTeachingClassForAcademicYear(settings, academicYear, recor
   if (index >= 0) next[index] = normalizedRecord;
   else next.push(normalizedRecord);
   result.byAcademicYear[yearKey] = normalizedTeachingYearRecords(next, catalog);
+  return result;
+}
+
+export function upsertTeachingClassesForAcademicYear(settings, academicYear, records, catalog = COURSE_CATALOG) {
+  let result = normalizeTeachingClassSettings(settings, catalog);
+  if (!Array.isArray(records)) return result;
+  for (const record of records) {
+    result = upsertTeachingClassForAcademicYear(result, academicYear, record, catalog);
+  }
   return result;
 }
 
@@ -1900,14 +1962,31 @@ function homeworkSubmissionStatusCounts(submissions = {}) {
   };
 }
 
-export function buildCommonAssignmentView(assignments = {}, catalog = COURSE_CATALOG) {
+function seedCommonRecordGroups(availableCourses, catalog, collectionName) {
   const groups = new Map();
+  for (const course of Array.isArray(availableCourses) ? availableCourses : []) {
+    if (!course || typeof course !== 'object') continue;
+    const groupMeta = commonRecordGroup(course, catalog);
+    if (!groups.has(groupMeta.groupKey)) {
+      groups.set(groupMeta.groupKey, {
+        ...groupMeta,
+        [collectionName]: new Map(),
+        availableCourseMap: new Map()
+      });
+    }
+    groups.get(groupMeta.groupKey).availableCourseMap.set(courseDataKey(course), { ...course });
+  }
+  return groups;
+}
+
+export function buildCommonAssignmentView(assignments = {}, catalog = COURSE_CATALOG, availableCourses = []) {
+  const groups = seedCommonRecordGroups(availableCourses, catalog, 'assignmentMap');
   for (const assignment of Object.values(assignments || {})) {
     for (const [courseKey, target] of Object.entries(assignment.targets || {})) {
       const hasHistory = Boolean((target.checks || []).length || Object.keys(target.submissions || {}).length);
       if (target.status === 'cancelled' && !hasHistory) continue;
       const groupMeta = commonRecordGroup(target.course, catalog);
-      if (!groups.has(groupMeta.groupKey)) groups.set(groupMeta.groupKey, { ...groupMeta, assignmentMap: new Map() });
+      if (!groups.has(groupMeta.groupKey)) groups.set(groupMeta.groupKey, { ...groupMeta, assignmentMap: new Map(), availableCourseMap: new Map() });
       const group = groups.get(groupMeta.groupKey);
       if (!group.assignmentMap.has(assignment.id)) {
         group.assignmentMap.set(assignment.id, {
@@ -1976,10 +2055,14 @@ export function buildCommonAssignmentView(assignments = {}, catalog = COURSE_CAT
       subject: group.subject,
       label: group.label,
       assignmentCount: assignmentsInGroup.length,
-      classCount: new Set(assignmentsInGroup.flatMap((assignment) => assignment.classes.map((item) => item.courseKey))).size,
+      classCount: new Set([
+        ...group.availableCourseMap.keys(),
+        ...assignmentsInGroup.flatMap((assignment) => assignment.classes.map((item) => item.courseKey))
+      ]).size,
       pendingSubmissionCount: assignmentsInGroup.reduce((sum, assignment) => sum + assignment.pendingSubmissionCount, 0),
       completedSubmissionCount: assignmentsInGroup.reduce((sum, assignment) => sum + assignment.completedSubmissionCount, 0),
-      assignments: assignmentsInGroup
+      assignments: assignmentsInGroup,
+      availableCourses: [...group.availableCourseMap.values()]
     };
   }).sort((left, right) => (systemOrder.get(left.system) ?? 99) - (systemOrder.get(right.system) ?? 99)
     || (gradeOrder.get(`${left.system}:${left.grade}`) ?? 99) - (gradeOrder.get(`${right.system}:${right.grade}`) ?? 99)
@@ -2039,14 +2122,14 @@ export function resolveAssignmentCheckSession(detail, periods = [], preferLastCh
   };
 }
 
-export function buildCommonExamView(exams = {}, catalog = COURSE_CATALOG) {
-  const groups = new Map();
+export function buildCommonExamView(exams = {}, catalog = COURSE_CATALOG, availableCourses = []) {
+  const groups = seedCommonRecordGroups(availableCourses, catalog, 'examMap');
   for (const exam of Object.values(exams || {})) {
     for (const [courseKey, target] of Object.entries(exam.targets || {})) {
       const hasHistory = Boolean((target.checks || []).length || Object.keys(target.makeups || {}).length);
       if (target.status === 'cancelled' && !hasHistory) continue;
       const groupMeta = commonRecordGroup(target.course, catalog);
-      if (!groups.has(groupMeta.groupKey)) groups.set(groupMeta.groupKey, { ...groupMeta, examMap: new Map() });
+      if (!groups.has(groupMeta.groupKey)) groups.set(groupMeta.groupKey, { ...groupMeta, examMap: new Map(), availableCourseMap: new Map() });
       const group = groups.get(groupMeta.groupKey);
       if (!group.examMap.has(exam.id)) {
         group.examMap.set(exam.id, {
@@ -2113,10 +2196,14 @@ export function buildCommonExamView(exams = {}, catalog = COURSE_CATALOG) {
       subject: group.subject,
       label: group.label,
       examCount: examsInGroup.length,
-      classCount: new Set(examsInGroup.flatMap((exam) => exam.classes.map((item) => item.courseKey))).size,
+      classCount: new Set([
+        ...group.availableCourseMap.keys(),
+        ...examsInGroup.flatMap((exam) => exam.classes.map((item) => item.courseKey))
+      ]).size,
       pendingMakeupCount: examsInGroup.reduce((sum, exam) => sum + exam.pendingMakeupCount, 0),
       completedMakeupCount: examsInGroup.reduce((sum, exam) => sum + exam.completedMakeupCount, 0),
-      exams: examsInGroup
+      exams: examsInGroup,
+      availableCourses: [...group.availableCourseMap.values()]
     };
   }).sort((left, right) => (systemOrder.get(left.system) ?? 99) - (systemOrder.get(right.system) ?? 99)
     || (gradeOrder.get(`${left.system}:${left.grade}`) ?? 99) - (gradeOrder.get(`${right.system}:${right.grade}`) ?? 99)

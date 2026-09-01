@@ -112,6 +112,7 @@ import {
   updateAssignmentTargetSchedule,
   updateExamTargetSchedule,
   upsertTeachingClassForAcademicYear,
+  upsertTeachingClassesForAcademicYear,
   upsertManagedScheduleVersionForAcademicYear,
   upsertExamDefinition,
   upsertAssignmentDefinition,
@@ -119,6 +120,7 @@ import {
   validateDataBackupEnvelope,
   validateManagedScheduleTimes,
   validateManagedScheduleVersionDraft,
+  validateTeachingClassBatchDraft,
   validateTeachingClassDraft
 } from '../preview-v2/core.mjs';
 
@@ -571,6 +573,61 @@ test('同班同科阻擋重複，但科目正規化後同班不同科仍可保�
   const namedExisting = [{ id: 'named', system: 'junior', grade: 'j8', className: '甲', subject: '理化', lastSeat: 50, vacantSeats: [] }];
   const namedDuplicate = validateTeachingClassDraft({ system: 'junior', grade: 'j8', className: ' 甲班 ', subject: '理化', lastSeat: 50, vacantSeatsInput: '' }, namedExisting);
   assert.equal(namedDuplicate.errors.some((error) => error.code === 'duplicate'), true);
+});
+
+test('批次新增共用學制、年級與科目，逐列驗證並阻擋批內或既有重複班級', () => {
+  const draft = {
+    system: 'junior',
+    grade: 'j8',
+    subject: ' 理化 ',
+    rows: [
+      { className: '５班', lastSeat: 50, vacantSeatsInput: '4、36' },
+      { className: '6', lastSeat: 52, vacantSeatsInput: '2' }
+    ]
+  };
+  const valid = validateTeachingClassBatchDraft(draft);
+  assert.equal(valid.valid, true);
+  assert.deepEqual(valid.records.map(({ system, grade, className, subject, lastSeat, vacantSeats }) => (
+    { system, grade, className, subject, lastSeat, vacantSeats }
+  )), [
+    { system: 'junior', grade: 'j8', className: '5', subject: '理化', lastSeat: 50, vacantSeats: [4, 36] },
+    { system: 'junior', grade: 'j8', className: '6', subject: '理化', lastSeat: 52, vacantSeats: [2] }
+  ]);
+
+  const duplicateInBatch = validateTeachingClassBatchDraft({
+    ...draft,
+    rows: [draft.rows[0], { ...draft.rows[1], className: ' 05 ' }]
+  });
+  assert.equal(duplicateInBatch.valid, false);
+  assert.equal(duplicateInBatch.errors.some((error) => error.rowIndex === 1 && error.code === 'duplicate'), true);
+  assert.equal(duplicateInBatch.rowFieldErrors[1].className, '這個班級與科目已經設定過了。');
+
+  const existing = [{ id: 'existing', system: 'junior', grade: 'j8', className: '6', subject: '理化', lastSeat: 52, vacantSeats: [2] }];
+  const duplicateExisting = validateTeachingClassBatchDraft(draft, existing);
+  assert.equal(duplicateExisting.errors.some((error) => error.rowIndex === 1 && error.code === 'duplicate'), true);
+  const invalid = validateTeachingClassBatchDraft({
+    ...draft,
+    rows: [draft.rows[0], { ...draft.rows[1], vacantSeatsInput: '53' }]
+  }, existing);
+  assert.equal(invalid.valid, false);
+  assert.equal(invalid.records.length, 0);
+  assert.equal(invalid.errors.some((error) => error.rowIndex === 1 && error.code === 'vacant-range'), true);
+  assert.equal(invalid.errors.some((error) => error.rowIndex === 1 && error.code === 'duplicate'), false);
+});
+
+test('批次寫入仍以獨立 course 保存，保留既有班級、其他學年度與版本結構', () => {
+  let settings = createEmptyTeachingClassSettings();
+  settings = upsertTeachingClassForAcademicYear(settings, 114, { id: 'old-year', system: 'junior', grade: 'j7', className: '1', subject: '生物', lastSeat: 45, vacantSeats: [] });
+  settings = upsertTeachingClassForAcademicYear(settings, 115, { id: 'existing', system: 'junior', grade: 'j8', className: '4', subject: '理化', lastSeat: 50, vacantSeats: [3] });
+  const next = upsertTeachingClassesForAcademicYear(settings, 115, [
+    { id: 'batch-5', system: 'junior', grade: 'j8', className: '5', subject: '理化', lastSeat: 50, vacantSeats: [4] },
+    { id: 'batch-6', system: 'junior', grade: 'j8', className: '6', subject: '理化', lastSeat: 52, vacantSeats: [2, 11] }
+  ]);
+  assert.equal(next.version, 1);
+  assert.deepEqual(Object.keys(next.byAcademicYear).sort(), ['114', '115']);
+  assert.deepEqual(teachingClassesForAcademicYear(next, 114).map((record) => record.id), ['old-year']);
+  assert.deepEqual(teachingClassesForAcademicYear(next, 115).map((record) => record.id), ['existing', 'batch-5', 'batch-6']);
+  assert.equal(parseTeachingClassSettings(JSON.parse(JSON.stringify(next))).valid, true);
 });
 
 test('同一實體班的不同科目會共用更新後的座號範圍與空號', () => {
@@ -1277,6 +1334,40 @@ test('待補考依共用考試 ID 分組，學生資訊保留班級、座號與�
   assert.deepEqual(groups[0].students.map((student) => [student.course.classLabel, student.seat]), [['805班', 12], ['806班', 7]]);
   assert.equal(groups[1].examId, 'other');
   assert.equal(groups[1].students[0].seat, 8);
+});
+
+test('授課班級會建立空白共通分類，並與只存在於歷史紀錄的分類安全合併', () => {
+  const configuredCourses = [
+    courseFromTeachingClass({ id: 'j8-805-chem', system: 'junior', grade: 'j8', className: '5', subject: '理化', lastSeat: 50, vacantSeats: [] }),
+    courseFromTeachingClass({ id: 'j8-806-chem', system: 'junior', grade: 'j8', className: '6', subject: '理化', lastSeat: 50, vacantSeats: [] }),
+    courseFromTeachingClass({ id: 's2-a-physics', system: 'senior', grade: 's2', className: '甲', subject: '物理', lastSeat: 48, vacantSeats: [] })
+  ];
+  const historicalCourse = { system: 'junior', grade: 'j9', className: '1', subject: '理化', classLabel: '901班' };
+  const historicalKey = courseDataKey(historicalCourse);
+  const due = { dateKey: '2026-08-25', slotId: 'p2', period: 2, start: '09:10', end: '10:00' };
+  const assignments = {
+    old: { id: 'old', title: '歷史作業', targets: { [historicalKey]: { course: historicalCourse, due, checks: [], submissions: {} } } }
+  };
+  const exams = {
+    old: { id: 'old', title: '歷史考試', targets: { [historicalKey]: { course: historicalCourse, due, checks: [], makeups: {} } } }
+  };
+
+  const assignmentGroups = buildCommonAssignmentView(assignments, COURSE_CATALOG, configuredCourses);
+  const examGroups = buildCommonExamView(exams, COURSE_CATALOG, configuredCourses);
+  assert.deepEqual(assignmentGroups.map((group) => group.label), ['八年級・理化', '九年級・理化', '高二・物理']);
+  assert.deepEqual(examGroups.map((group) => group.label), ['八年級・理化', '九年級・理化', '高二・物理']);
+  const emptyAssignments = assignmentGroups.find((group) => group.groupKey === 'junior:j8:理化');
+  const emptyExams = examGroups.find((group) => group.groupKey === 'junior:j8:理化');
+  assert.equal(emptyAssignments.assignmentCount, 0);
+  assert.equal(emptyAssignments.classCount, 2);
+  assert.equal(emptyAssignments.availableCourses.length, 2);
+  assert.deepEqual(emptyAssignments.assignments, []);
+  assert.equal(emptyExams.examCount, 0);
+  assert.equal(emptyExams.classCount, 2);
+  assert.equal(emptyExams.availableCourses.length, 2);
+  assert.deepEqual(emptyExams.exams, []);
+  assert.equal(assignmentGroups.find((group) => group.groupKey === 'junior:j9:理化').assignmentCount, 1);
+  assert.equal(examGroups.find((group) => group.groupKey === 'junior:j9:理化').examCount, 1);
 });
 
 test('共通考試依年級科目、考試與班級時間建立四層摘要', () => {

@@ -90,6 +90,7 @@ import {
   updateAssignmentTargetSchedule,
   updateExamTargetSchedule,
   upsertTeachingClassForAcademicYear,
+  upsertTeachingClassesForAcademicYear,
   upsertManagedScheduleVersionForAcademicYear,
   upsertExamDefinition,
   upsertAssignmentDefinition,
@@ -97,8 +98,9 @@ import {
   validateDataBackupEnvelope,
   validateManagedScheduleTimes,
   validateManagedScheduleVersionDraft,
+  validateTeachingClassBatchDraft,
   validateTeachingClassDraft
-} from './core.mjs?v=20260830-pwa-main-1';
+} from './core.mjs?v=20260901-production-fixes-1';
 
 const app = document.querySelector('#app');
 const TEST_DATA_PROFILE = 'integration-v1';
@@ -464,6 +466,8 @@ const state = {
   academicPeriodLastValidYear: null,
   teachingClassDraft: null,
   teachingClassValidation: null,
+  teachingClassBatchDraft: null,
+  teachingClassBatchValidation: null,
   teachingClassReturnId: null,
   scheduleExpandedPeriods: [],
   scheduleVersionForm: null,
@@ -823,6 +827,24 @@ function newTeachingClassDraft(record = null) {
   };
 }
 
+function newTeachingClassBatchRow() {
+  return {
+    className: '',
+    lastSeat: 50,
+    vacantSeatsInput: ''
+  };
+}
+
+function newTeachingClassBatchDraft() {
+  const system = 'junior';
+  return {
+    system,
+    grade: Object.keys(COURSE_CATALOG[system].grades)[0],
+    subject: '',
+    rows: [newTeachingClassBatchRow()]
+  };
+}
+
 function createTeachingClassId() {
   return globalThis.crypto?.randomUUID?.() || `teaching-class-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -831,6 +853,17 @@ function focusTeachingClassError(validation) {
   const firstField = validation?.errors?.[0]?.field || '';
   const target = firstField
     ? app.querySelector(`[data-teaching-class-field="${firstField}"]`)
+    : null;
+  (target || app.querySelector('#teaching-class-errors'))?.focus({ preventScroll: false });
+}
+
+function focusTeachingClassBatchError(validation) {
+  const firstError = validation?.errors?.[0];
+  const rowSelector = Number.isInteger(firstError?.rowIndex)
+    ? `[data-teaching-class-row-index="${firstError.rowIndex}"]`
+    : '';
+  const target = firstError?.field && firstError.field !== 'rows'
+    ? app.querySelector(`${rowSelector}[data-teaching-class-field="${firstError.field}"]`)
     : null;
   (target || app.querySelector('#teaching-class-errors'))?.focus({ preventScroll: false });
 }
@@ -855,6 +888,18 @@ function clearTeachingClassErrorsInPlace() {
   for (const error of app.querySelectorAll('.teaching-class-field-error')) error.remove();
 }
 
+function clearTeachingClassBatchErrorsInPlace() {
+  state.teachingClassBatchValidation = null;
+  app.querySelector('#teaching-class-errors')?.remove();
+  for (const element of app.querySelectorAll('[data-teaching-class-field][aria-invalid="true"]')) {
+    element.removeAttribute('aria-invalid');
+    const helpId = element.dataset.teachingClassHelpId;
+    if (helpId) element.setAttribute('aria-describedby', helpId);
+    else element.removeAttribute('aria-describedby');
+  }
+  for (const error of app.querySelectorAll('.teaching-class-field-error')) error.remove();
+}
+
 function updateTeachingClassDraftField(field, value) {
   if (!state.teachingClassDraft) return;
   if (field === 'system') {
@@ -870,6 +915,35 @@ function updateTeachingClassDraftField(field, value) {
     state.teachingClassDraft = { ...state.teachingClassDraft, [field]: value };
   }
   clearTeachingClassErrorsInPlace();
+}
+
+function updateTeachingClassBatchDraftField(field, value, rowIndex = null) {
+  if (!state.teachingClassBatchDraft) return;
+  if (Number.isInteger(rowIndex)) {
+    if (!state.teachingClassBatchDraft.rows[rowIndex]) return;
+    state.teachingClassBatchDraft = {
+      ...state.teachingClassBatchDraft,
+      rows: state.teachingClassBatchDraft.rows.map((row, index) => index === rowIndex
+        ? { ...row, [field === 'vacantSeats' ? 'vacantSeatsInput' : field]: value }
+        : row)
+    };
+  } else if (field === 'system') {
+    const system = COURSE_CATALOG[value] ? value : Object.keys(COURSE_CATALOG)[0];
+    state.teachingClassBatchDraft = {
+      ...state.teachingClassBatchDraft,
+      system,
+      grade: Object.keys(COURSE_CATALOG[system].grades)[0]
+    };
+  } else if (field === 'grade') {
+    const grades = COURSE_CATALOG[state.teachingClassBatchDraft.system]?.grades || {};
+    state.teachingClassBatchDraft = {
+      ...state.teachingClassBatchDraft,
+      grade: grades[value] ? value : Object.keys(grades)[0]
+    };
+  } else {
+    state.teachingClassBatchDraft = { ...state.teachingClassBatchDraft, [field]: value };
+  }
+  clearTeachingClassBatchErrorsInPlace();
 }
 
 function clearAcademicPeriodErrorsInPlace() {
@@ -1096,11 +1170,36 @@ function renderWeeklySchedule() {
 }
 
 function commonAssignmentGroups() {
-  return buildCommonAssignmentView(homeworkRecords.assignments, COURSE_CATALOG);
+  const availableCourses = teachingClassesThisYear().map(courseFromTeachingClass).filter(Boolean);
+  return buildCommonAssignmentView(homeworkRecords.assignments, COURSE_CATALOG, availableCourses);
 }
 
 function commonExamGroups() {
-  return buildCommonExamView(homeworkRecords.exams, COURSE_CATALOG);
+  const availableCourses = teachingClassesThisYear().map(courseFromTeachingClass).filter(Boolean);
+  return buildCommonExamView(homeworkRecords.exams, COURSE_CATALOG, availableCourses);
+}
+
+function commonHubSchedulingSession(group, fallbackSession = null) {
+  const courses = Array.isArray(group?.availableCourses) ? group.availableCourses : [];
+  if (!courses.length) return fallbackSession;
+  const dateKey = localDateKey(state.now);
+  const currentTime = `${String(state.now.getHours()).padStart(2, '0')}:${String(state.now.getMinutes()).padStart(2, '0')}`;
+  const scheduled = courses.map((course) => ({
+    course,
+    occurrence: findNextCourseOccurrence(scheduleSlotsProvider, courseDataKey(course), dateKey, currentTime, 35, true)
+  })).filter((item) => item.occurrence).sort((left, right) => (
+    left.occurrence.dateKey.localeCompare(right.occurrence.dateKey)
+    || left.occurrence.start.localeCompare(right.occurrence.start)
+    || left.course.classLabel.localeCompare(right.course.classLabel, 'zh-Hant')
+  ));
+  const course = scheduled[0]?.course || courses[0];
+  return createSessionSnapshot(state.now, {
+    id: 'common-hub',
+    period: 0,
+    start: currentTime,
+    end: currentTime,
+    course
+  });
 }
 
 function renderBottomNavigation(active = bottomNavigationActiveTab(state.page)) {
@@ -1140,7 +1239,7 @@ function commonAssignmentClassStatus(item) {
 }
 
 function renderAssignmentGroupCards(groups) {
-  if (!groups.length) return '<p class="common-empty">目前還沒有作業資料。請先從本堂課新增作業。</p>';
+  if (!groups.length) return '<p class="common-empty">目前沒有可用的年級與科目。請先到設定新增授課班級。</p>';
   return groups.map((group) => `<button type="button" class="exam-hub-card exam-group-card homework-hub-card" data-action="open-assignment-group" data-group-key="${escapeHtml(group.groupKey)}">
     <span class="exam-hub-symbol" aria-hidden="true">${escapeHtml(group.gradeLabel.slice(0, 1))}</span>
     <span class="exam-hub-card-copy"><strong>${escapeHtml(group.label)}</strong><small>${group.assignmentCount} 份作業・${group.classCount} 個班級</small></span>
@@ -1160,7 +1259,10 @@ function renderCommonAssignmentList(group) {
       <span class="exam-hub-card-meta"><em class="${assignment.pendingSubmissionCount ? '' : 'quiet'}">${status}</em><i aria-hidden="true">›</i></span>
     </button>`;
   }).join('');
-  return `<section class="exam-hub-list" aria-label="${escapeHtml(group.label)}作業">${cards}</section>
+  const list = cards
+    ? `<section class="exam-hub-list" aria-label="${escapeHtml(group.label)}作業">${cards}</section>`
+    : '<p class="common-empty">這個年級與科目目前還沒有作業。</p>';
+  return `${list}
     <button type="button" class="common-add-button homework-add-button" data-action="add-common-assignment">＋ 新增作業</button>`;
 }
 
@@ -1345,7 +1447,7 @@ function commonExamClassStatus(item) {
 }
 
 function renderExamGroupCards(groups) {
-  if (!groups.length) return '<p class="common-empty">目前還沒有考試資料。請先從本堂課新增考試。</p>';
+  if (!groups.length) return '<p class="common-empty">目前沒有可用的年級與科目。請先到設定新增授課班級。</p>';
   return groups.map((group) => `<button type="button" class="exam-hub-card exam-group-card" data-action="open-exam-group" data-group-key="${escapeHtml(group.groupKey)}">
     <span class="exam-hub-symbol" aria-hidden="true">${escapeHtml(group.gradeLabel.slice(0, 1))}</span>
     <span class="exam-hub-card-copy"><strong>${escapeHtml(group.label)}</strong><small>${group.examCount} 份考試・${group.classCount} 個班級</small></span>
@@ -1365,7 +1467,10 @@ function renderCommonExamList(group) {
       <span class="exam-hub-card-meta"><em class="${exam.pendingMakeupCount ? '' : 'quiet'}">${status}</em><i aria-hidden="true">›</i></span>
     </button>`;
   }).join('');
-  return `<section class="exam-hub-list" aria-label="${escapeHtml(group.label)}考試">${cards}</section>
+  const list = cards
+    ? `<section class="exam-hub-list" aria-label="${escapeHtml(group.label)}考試">${cards}</section>`
+    : '<p class="common-empty">這個年級與科目目前還沒有考試。</p>';
+  return `${list}
     <button type="button" class="common-add-button" data-action="add-common-exam">＋ 新增考試</button>`;
 }
 
@@ -2111,7 +2216,63 @@ function teachingClassFieldError(field, fieldErrors) {
   return fieldErrors[field] ? `<small class="teaching-class-field-error" id="teaching-class-${field}-error">${escapeHtml(fieldErrors[field])}</small>` : '';
 }
 
+function teachingClassBatchFieldAttributes(field, fieldErrors, helpId = '', rowIndex = null) {
+  const error = fieldErrors[field];
+  const scope = Number.isInteger(rowIndex) ? `row-${rowIndex}` : 'shared';
+  const errorId = `teaching-class-batch-${scope}-${field}-error`;
+  const describedBy = [helpId, error ? errorId : ''].filter(Boolean).join(' ');
+  return `${helpId ? ` data-teaching-class-help-id="${helpId}"` : ''}${error ? ' aria-invalid="true"' : ''}${describedBy ? ` aria-describedby="${describedBy}"` : ''}`;
+}
+
+function teachingClassBatchFieldError(field, fieldErrors, rowIndex = null) {
+  if (!fieldErrors[field]) return '';
+  const scope = Number.isInteger(rowIndex) ? `row-${rowIndex}` : 'shared';
+  return `<small class="teaching-class-field-error" id="teaching-class-batch-${scope}-${field}-error">${escapeHtml(fieldErrors[field])}</small>`;
+}
+
+function renderTeachingClassBatchForm() {
+  const academicYear = currentTeachingAcademicYear();
+  const draft = state.teachingClassBatchDraft || newTeachingClassBatchDraft();
+  const validation = state.teachingClassBatchValidation;
+  const sharedFieldErrors = validation?.sharedFieldErrors || {};
+  const rowFieldErrors = validation?.rowFieldErrors || [];
+  const systemOptions = Object.entries(COURSE_CATALOG).map(([value, system]) => `<option value="${value}"${draft.system === value ? ' selected' : ''}>${escapeHtml(system.label)}</option>`).join('');
+  const gradeOptions = Object.entries(COURSE_CATALOG[draft.system]?.grades || {}).map(([value, grade]) => `<option value="${value}"${draft.grade === value ? ' selected' : ''}>${escapeHtml(grade.label)}</option>`).join('');
+  const subjectSuggestions = [...new Set(Object.values(COURSE_CATALOG[draft.system]?.grades?.[draft.grade]?.subjects || []))];
+  const messages = validation?.errors.map((error) => error.message).filter((message, index, list) => list.indexOf(message) === index) || [];
+  const rows = draft.rows.map((row, rowIndex) => {
+    const fieldErrors = rowFieldErrors[rowIndex] || {};
+    const rowHelpId = `teaching-class-batch-row-help-${rowIndex}`;
+    return `<section class="teaching-class-batch-row" data-teaching-class-row="${rowIndex}" aria-labelledby="teaching-class-batch-row-title-${rowIndex}">
+      <div class="teaching-class-batch-row-heading"><strong id="teaching-class-batch-row-title-${rowIndex}">班級 ${rowIndex + 1}</strong>${draft.rows.length > 1 ? `<button type="button" data-action="remove-teaching-class-row" data-teaching-class-row-index="${rowIndex}" aria-label="移除班級 ${rowIndex + 1}">移除</button>` : ''}</div>
+      <div class="teaching-class-batch-fields">
+        <label><span>班級</span><input type="text" maxlength="20" inputmode="text" value="${escapeHtml(row.className)}" placeholder="5、甲、A" autocomplete="off" data-action="teaching-class-field" data-teaching-class-field="className" data-teaching-class-row-index="${rowIndex}"${teachingClassBatchFieldAttributes('className', fieldErrors, rowHelpId, rowIndex)} />${teachingClassBatchFieldError('className', fieldErrors, rowIndex)}</label>
+        <label><span>最後座號</span><input type="number" min="1" max="60" step="1" inputmode="numeric" value="${escapeHtml(row.lastSeat)}" placeholder="50" data-action="teaching-class-field" data-teaching-class-field="lastSeat" data-teaching-class-row-index="${rowIndex}"${teachingClassBatchFieldAttributes('lastSeat', fieldErrors, rowHelpId, rowIndex)} />${teachingClassBatchFieldError('lastSeat', fieldErrors, rowIndex)}</label>
+        <label><span>空號（選填）</span><input type="text" inputmode="text" value="${escapeHtml(row.vacantSeatsInput)}" placeholder="4、36" autocomplete="off" data-action="teaching-class-field" data-teaching-class-field="vacantSeats" data-teaching-class-row-index="${rowIndex}"${teachingClassBatchFieldAttributes('vacantSeats', fieldErrors, rowHelpId, rowIndex)} />${teachingClassBatchFieldError('vacantSeats', fieldErrors, rowIndex)}</label>
+      </div>
+      <small class="teaching-class-field-help" id="${rowHelpId}">班級不用輸入「班」；最後座號最多 60；多個空號可用頓號或逗號分隔。</small>
+    </section>`;
+  }).join('');
+  return `${pageHeader('新增授課班級', `${academicYear}學年度`, 'back-teaching-classes', null, '', '返回授課班級')}
+    <main id="main" class="content teaching-class-form-content" tabindex="-1">
+      <section class="teaching-class-form-intro"><p class="eyebrow">批次新增</p><h1>${academicYear}學年度</h1><p>先選擇這批班級共用的學制、年級與科目，再逐列填寫各班座號設定；最後會一次儲存全部班級。</p></section>
+      ${messages.length ? `<section class="teaching-class-error-summary" id="teaching-class-errors" role="alert" tabindex="-1"><strong>請先修正以下內容</strong>${messages.map((message) => `<span>${escapeHtml(message)}</span>`).join('')}</section>` : ''}
+      <form class="teaching-class-form" data-teaching-class-form novalidate>
+        <div class="teaching-class-form-grid two-columns">
+          <label><span>學制（共用）</span><select data-action="teaching-class-field" data-teaching-class-field="system"${teachingClassBatchFieldAttributes('system', sharedFieldErrors)}>${systemOptions}</select>${teachingClassBatchFieldError('system', sharedFieldErrors)}</label>
+          <label><span>年級（共用）</span><select data-action="teaching-class-field" data-teaching-class-field="grade"${teachingClassBatchFieldAttributes('grade', sharedFieldErrors)}>${gradeOptions}</select>${teachingClassBatchFieldError('grade', sharedFieldErrors)}</label>
+        </div>
+        <label><span>科目（共用）</span><input type="text" maxlength="40" value="${escapeHtml(draft.subject)}" list="teaching-class-subjects" placeholder="例如 理化" autocomplete="off" data-action="teaching-class-field" data-teaching-class-field="subject"${teachingClassBatchFieldAttributes('subject', sharedFieldErrors, 'teaching-class-subject-help')} /><datalist id="teaching-class-subjects">${subjectSuggestions.map((subject) => `<option value="${escapeHtml(subject)}"></option>`).join('')}</datalist><small class="teaching-class-field-help" id="teaching-class-subject-help">可選提示，也可以直接輸入其他科目。</small>${teachingClassBatchFieldError('subject', sharedFieldErrors)}</label>
+        ${rows}
+        <button type="button" class="secondary-button" data-action="add-teaching-class-row"><span aria-hidden="true">＋</span> 新增班級</button>
+        <aside class="teaching-class-roster-note"><strong>一次儲存全部班級</strong><p>每列會保存成獨立的授課班級；若任何一列有誤，這一批都不會寫入。</p></aside>
+        <button type="button" class="primary-button large teaching-class-save" data-action="save-teaching-class-batch">儲存全部班級</button>
+      </form>
+    </main>`;
+}
+
 function renderTeachingClassForm() {
+  if (state.teachingClassBatchDraft) return renderTeachingClassBatchForm();
   const academicYear = currentTeachingAcademicYear();
   const draft = state.teachingClassDraft || newTeachingClassDraft();
   const validation = state.teachingClassValidation;
@@ -2323,6 +2484,7 @@ function renderAcademicPeriodSettings() {
 function assignmentFormCourses() {
   const session = state.assignmentForm?.session || state.session;
   const courses = new Map(peerCourses(session).map((course) => [courseDataKey(course), course]));
+  for (const course of state.assignmentForm?.availableCourses || []) courses.set(courseDataKey(course), course);
   const assignment = state.assignmentForm?.assignmentId ? homeworkRecords.assignments[state.assignmentForm.assignmentId] : null;
   for (const target of Object.values(assignment?.targets || {})) courses.set(courseDataKey(target.course), target.course);
   return [...courses.values()];
@@ -2498,8 +2660,8 @@ function renderAssignmentForm() {
     ${pageHeader(form.assignmentId ? '修改作業' : '新增作業', `${session.course.classLabel}・${session.course.subject}`, 'back-assignment-form')}
     <main id="main" class="content assignment-form-content" tabindex="-1">
       <section class="form-section"><label class="form-label" for="assignment-title">作業名稱</label><input id="assignment-title" class="title-input" data-action="assignment-title" maxlength="60" value="${escapeHtml(form.title)}" placeholder="例如：理化習作 p.36" /></section>
-      <section class="form-section"><div class="form-section-title"><div><strong>套用班級</strong><span>只顯示同年級、同科且已在課表中的班級</span></div></div><div class="class-choice-grid">${classButtons}</div>${!form.showPeers && courses.length > 1 ? '<button class="expand-classes" data-action="show-peer-classes">＋ 加入其他班級</button>' : ''}${editSharingNotice ? `<p class="edit-sharing-notice">${escapeHtml(editSharingNotice)}</p>` : ''}</section>
-      <section class="form-section assignment-batch-time"><div class="form-section-title"><div><strong>批次套用時間</strong><span>可先套用全部班級，再逐班修改</span></div></div><div class="schedule-choice-grid">${modeButton('next', '下次上課')}${modeButton('next-week', '下週同一堂')}${modeButton('date', '選擇日期')}</div>${form.scheduleMode === 'date' ? `<div class="assignment-batch-date"><label class="date-field">檢查日期<input type="date" data-action="assignment-date" min="${assignmentSchedulingSession(form).dateKey}" value="${escapeHtml(form.selectedDate)}" /></label><button type="button" data-action="apply-assignment-batch-date" ${form.selectedDate ? '' : 'disabled'}>套用日期</button></div>` : ''}${form.timeNotice ? `<p class="assignment-time-notice">${escapeHtml(form.timeNotice)}</p>` : ''}</section>
+      <section class="form-section"><div class="form-section-title"><div><strong>套用班級</strong><span>顯示同年級、同科目的授課班級</span></div></div><div class="class-choice-grid">${classButtons}</div>${!form.showPeers && courses.length > 1 ? '<button class="expand-classes" data-action="show-peer-classes">＋ 加入其他班級</button>' : ''}${editSharingNotice ? `<p class="edit-sharing-notice">${escapeHtml(editSharingNotice)}</p>` : ''}</section>
+      <section class="form-section assignment-batch-time"><div class="form-section-title"><div><strong>批次套用時間</strong><span>可先套用全部班級，再逐班修改</span></div></div><div class="schedule-choice-grid">${modeButton('next', '下次上課')}${modeButton('next-week', '下週同一堂')}${modeButton('date', '選擇日期')}</div>${form.scheduleMode === 'date' ? `<div class="assignment-batch-date"><label class="date-field">檢查日期<input type="date" data-action="assignment-date" min="${assignmentSchedulingSession(form).dateKey}" value="${escapeHtml(form.selectedDate)}" /></label></div>` : ''}${form.timeNotice ? `<p class="assignment-time-notice" aria-live="polite">${escapeHtml(form.timeNotice)}</p>` : ''}</section>
       <section class="form-section"><div class="form-section-title"><div><strong>各班檢查課堂</strong><span>每個班級都能單獨修改時間</span></div></div>${previews ? `<ul class="schedule-preview-list exam-time-list assignment-time-list">${previews}</ul>` : '<p class="compact-empty">尚未選擇班級。</p>'}<div class="form-validation" role="status" ${validation.length ? '' : 'hidden'}>${validation.map((message) => `<span>${escapeHtml(message)}</span>`).join('')}</div></section>
       <div class="form-fixed-action"><button class="primary-button" data-action="save-assignment" ${validation.length ? 'disabled' : ''}>${form.assignmentId ? '儲存修改' : '確認新增'}</button></div>
     </main>${assignmentTimeEditor(form)}`;
@@ -2522,7 +2684,8 @@ function openAssignmentForm(assignmentId = null, options = {}) {
     title: assignment?.title || '',
     selectedCourseKeys: activeKeys,
     initialCourseKeys: [...activeKeys],
-    showPeers: Boolean(assignment && activeKeys.length > 1),
+    availableCourses: Array.isArray(options.availableCourses) ? options.availableCourses : [],
+    showPeers: Boolean(options.showPeers || (assignment && activeKeys.length > 1)),
     scheduleMode: initialMode,
     selectedDate,
     scheduleDirty: false,
@@ -2532,7 +2695,8 @@ function openAssignmentForm(assignmentId = null, options = {}) {
     recentlyEditedCourseKey: '',
     timeNotice: '',
     timeEditor: null,
-    batchConfirmMode: ''
+    batchConfirmMode: '',
+    batchConfirmPreviousDate: null
   };
   if (!assignment) applyIndependentAssignmentTimes('next', activeKeys, { batch: true, notice: false });
   state.page = 'assignment-form';
@@ -2570,6 +2734,7 @@ function saveAssignmentForm() {
 function examFormCourses() {
   const session = state.examForm?.session || state.session;
   const courses = new Map(peerCourses(session).map((course) => [courseDataKey(course), course]));
+  for (const course of state.examForm?.availableCourses || []) courses.set(courseDataKey(course), course);
   const exam = state.examForm?.examId ? homeworkRecords.exams[state.examForm.examId] : null;
   for (const target of Object.values(exam?.targets || {})) courses.set(courseDataKey(target.course), target.course);
   return [...courses.values()];
@@ -2715,7 +2880,7 @@ function renderExamForm() {
     ${pageHeader(form.examId ? '修改考試' : '新增考試', `${session.course.classLabel}・${session.course.subject}`, 'back-exam-form')}
     <main id="main" class="content assignment-form-content exam-form-content" tabindex="-1">
       <section class="form-section"><label class="form-label" for="exam-title">考試名稱</label><input id="exam-title" class="title-input" data-action="exam-title" maxlength="60" value="${escapeHtml(form.title)}" placeholder="例如：第一章小考" /></section>
-      <section class="form-section"><div class="form-section-title"><div><strong>套用班級</strong><span>只顯示同年級、同科且已在課表中的班級</span></div></div><div class="class-choice-grid">${classButtons}</div>${!form.showPeers && courses.length > 1 ? '<button class="expand-classes" data-action="show-exam-peer-classes">＋ 加入其他班級</button>' : ''}${editSharingNotice ? `<p class="edit-sharing-notice exam-sharing-notice">${escapeHtml(editSharingNotice)}</p>` : ''}</section>
+      <section class="form-section"><div class="form-section-title"><div><strong>套用班級</strong><span>顯示同年級、同科目的授課班級</span></div></div><div class="class-choice-grid">${classButtons}</div>${!form.showPeers && courses.length > 1 ? '<button class="expand-classes" data-action="show-exam-peer-classes">＋ 加入其他班級</button>' : ''}${editSharingNotice ? `<p class="edit-sharing-notice exam-sharing-notice">${escapeHtml(editSharingNotice)}</p>` : ''}</section>
       ${timingSection}
       <div class="form-fixed-action"><button class="primary-button exam-primary-button" data-action="save-exam" ${validation.length ? 'disabled' : ''}>${form.examId ? '儲存修改' : '確認新增'}</button></div>
     </main>${form.independentSchedule ? examTimeEditor(form) : ''}`;
@@ -2742,7 +2907,8 @@ function openExamForm(examId = null, options = {}) {
     title: exam?.title || '',
     selectedCourseKeys: activeKeys,
     initialCourseKeys: [...activeKeys],
-    showPeers: Boolean(exam && activeKeys.length > 1),
+    availableCourses: Array.isArray(options.availableCourses) ? options.availableCourses : [],
+    showPeers: Boolean(options.showPeers || (exam && activeKeys.length > 1)),
     scheduleMode: independentSchedule ? 'independent' : exam?.scheduleMode || 'next',
     originalScheduleMode: independentSchedule ? 'independent' : exam?.scheduleMode || 'next',
     selectedDate,
@@ -4061,6 +4227,8 @@ app.addEventListener('click', (event) => {
   if (action === 'open-teaching-classes') {
     state.teachingClassDraft = null;
     state.teachingClassValidation = null;
+    state.teachingClassBatchDraft = null;
+    state.teachingClassBatchValidation = null;
     state.teachingClassReturnId = null;
     state.page = 'teaching-classes';
     clearTimedToast();
@@ -4069,6 +4237,8 @@ app.addEventListener('click', (event) => {
   if (action === 'back-settings-from-teaching-classes') {
     state.teachingClassDraft = null;
     state.teachingClassValidation = null;
+    state.teachingClassBatchDraft = null;
+    state.teachingClassBatchValidation = null;
     state.teachingClassReturnId = null;
     state.page = 'settings';
     clearTimedToast();
@@ -4076,8 +4246,10 @@ app.addEventListener('click', (event) => {
     window.requestAnimationFrame(() => app.querySelector('[data-action="open-teaching-classes"]')?.focus({ preventScroll: true }));
   }
   if (action === 'new-teaching-class') {
-    state.teachingClassDraft = newTeachingClassDraft();
+    state.teachingClassDraft = null;
     state.teachingClassValidation = null;
+    state.teachingClassBatchDraft = newTeachingClassBatchDraft();
+    state.teachingClassBatchValidation = null;
     state.teachingClassReturnId = null;
     state.page = 'teaching-class-form';
     clearTimedToast();
@@ -4088,6 +4260,8 @@ app.addEventListener('click', (event) => {
     if (!record) return;
     state.teachingClassDraft = newTeachingClassDraft(record);
     state.teachingClassValidation = null;
+    state.teachingClassBatchDraft = null;
+    state.teachingClassBatchValidation = null;
     state.teachingClassReturnId = record.id;
     state.page = 'teaching-class-form';
     clearTimedToast();
@@ -4097,6 +4271,8 @@ app.addEventListener('click', (event) => {
     const returnId = state.teachingClassReturnId;
     state.teachingClassDraft = null;
     state.teachingClassValidation = null;
+    state.teachingClassBatchDraft = null;
+    state.teachingClassBatchValidation = null;
     state.teachingClassReturnId = null;
     state.page = 'teaching-classes';
     clearTimedToast();
@@ -4107,6 +4283,63 @@ app.addEventListener('click', (event) => {
         : '[data-action="new-teaching-class"]';
       (app.querySelector(selector) || app.querySelector('#main'))?.focus({ preventScroll: true });
     });
+  }
+  if (action === 'add-teaching-class-row' && state.teachingClassBatchDraft) {
+    const rowIndex = state.teachingClassBatchDraft.rows.length;
+    state.teachingClassBatchDraft = {
+      ...state.teachingClassBatchDraft,
+      rows: [...state.teachingClassBatchDraft.rows, newTeachingClassBatchRow()]
+    };
+    state.teachingClassBatchValidation = null;
+    render();
+    window.requestAnimationFrame(() => app.querySelector(`[data-teaching-class-row-index="${rowIndex}"][data-teaching-class-field="className"]`)?.focus({ preventScroll: true }));
+  }
+  if (action === 'remove-teaching-class-row' && state.teachingClassBatchDraft?.rows.length > 1) {
+    const rowIndex = Number(target.dataset.teachingClassRowIndex);
+    if (!Number.isInteger(rowIndex) || !state.teachingClassBatchDraft.rows[rowIndex]) return;
+    state.teachingClassBatchDraft = {
+      ...state.teachingClassBatchDraft,
+      rows: state.teachingClassBatchDraft.rows.filter((_, index) => index !== rowIndex)
+    };
+    state.teachingClassBatchValidation = null;
+    const focusIndex = Math.min(rowIndex, state.teachingClassBatchDraft.rows.length - 1);
+    render();
+    window.requestAnimationFrame(() => app.querySelector(`[data-teaching-class-row-index="${focusIndex}"][data-teaching-class-field="className"]`)?.focus({ preventScroll: true }));
+  }
+  if (action === 'save-teaching-class-batch' && state.teachingClassBatchDraft) {
+    const academicYear = currentTeachingAcademicYear();
+    const validation = validateTeachingClassBatchDraft(state.teachingClassBatchDraft, teachingClassesThisYear());
+    if (!validation.valid) {
+      state.teachingClassBatchValidation = validation;
+      render();
+      window.requestAnimationFrame(() => focusTeachingClassBatchError(validation));
+      return;
+    }
+    const records = validation.records.map((record) => ({ ...record, id: createTeachingClassId() }));
+    const nextSettings = upsertTeachingClassesForAcademicYear(teachingClassSettings, academicYear, records);
+    if (!persistTeachingClassSettings(nextSettings)) {
+      const storageValidation = {
+        valid: false,
+        errors: [{ field: 'storage', code: 'storage', message: '無法儲存到這台裝置，這批班級都沒有變更。請確認瀏覽器允許網站儲存資料後再試一次。' }],
+        sharedFieldErrors: {},
+        rowFieldErrors: state.teachingClassBatchDraft.rows.map(() => ({})),
+        records: []
+      };
+      state.teachingClassBatchValidation = storageValidation;
+      render();
+      window.requestAnimationFrame(() => focusTeachingClassBatchError(storageValidation));
+      return;
+    }
+    teachingClassSettings = nextSettings;
+    state.teachingClassDraft = null;
+    state.teachingClassValidation = null;
+    state.teachingClassBatchDraft = null;
+    state.teachingClassBatchValidation = null;
+    state.teachingClassReturnId = null;
+    state.page = 'teaching-classes';
+    const yearWording = hasSavedAcademicPeriodSettings ? `${academicYear}學年度` : `${academicYear}示範學年度`;
+    showTimedToast(`${records.length} 個授課班級已新增到${yearWording}`);
+    window.requestAnimationFrame(() => app.querySelector(`[data-action="edit-teaching-class"][data-class-id="${CSS.escape(records[0].id)}"]`)?.focus({ preventScroll: true }));
   }
   if (action === 'save-teaching-class' && state.teachingClassDraft) {
     const academicYear = currentTeachingAcademicYear();
@@ -4135,6 +4368,8 @@ app.addEventListener('click', (event) => {
     teachingClassSettings = nextSettings;
     state.teachingClassDraft = null;
     state.teachingClassValidation = null;
+    state.teachingClassBatchDraft = null;
+    state.teachingClassBatchValidation = null;
     state.teachingClassReturnId = null;
     state.page = 'teaching-classes';
     const yearWording = hasSavedAcademicPeriodSettings ? `${academicYear}學年度` : `${academicYear}示範學年度`;
@@ -4261,9 +4496,14 @@ app.addEventListener('click', (event) => {
     const { group } = assignmentHubContext();
     const sourceClass = group?.assignments.flatMap((assignment) => assignment.classes.map((item) => ({ assignmentId: assignment.assignmentId, courseKey: item.courseKey }))).find(Boolean);
     const detail = sourceClass ? assignmentClassDetail(homeworkRecords.assignments, sourceClass.assignmentId, sourceClass.courseKey) : null;
-    const session = assignmentTargetSession(detail);
-    if (session) openAssignmentForm(null, { session, returnPage: 'assignment-hub' });
-    else showTimedToast('這個分類目前沒有可用的課表時間');
+    const session = commonHubSchedulingSession(group, assignmentTargetSession(detail));
+    if (session) openAssignmentForm(null, {
+      session,
+      returnPage: 'assignment-hub',
+      availableCourses: group?.availableCourses || [],
+      showPeers: true
+    });
+    else showTimedToast('這個分類目前沒有可用的授課班級');
   }
   if (action === 'edit-common-assignment') {
     const { assignment } = assignmentHubContext();
@@ -4441,9 +4681,14 @@ app.addEventListener('click', (event) => {
     const { group } = examHubContext();
     const sourceClass = group?.exams.flatMap((exam) => exam.classes.map((item) => ({ examId: exam.examId, courseKey: item.courseKey }))).find(Boolean);
     const detail = sourceClass ? examClassDetail(homeworkRecords.exams, sourceClass.examId, sourceClass.courseKey) : null;
-    const session = examTargetSession(detail);
-    if (session) openExamForm(null, { session, returnPage: 'exam-hub' });
-    else showTimedToast('這個分類目前沒有可用的課表時間');
+    const session = commonHubSchedulingSession(group, examTargetSession(detail));
+    if (session) openExamForm(null, {
+      session,
+      returnPage: 'exam-hub',
+      availableCourses: group?.availableCourses || [],
+      showPeers: true
+    });
+    else showTimedToast('這個分類目前沒有可用的授課班級');
   }
   if (action === 'edit-common-exam') {
     const { exam } = examHubContext();
@@ -4596,31 +4841,32 @@ app.addEventListener('click', (event) => {
     const mode = target.dataset.mode;
     if (mode === 'date') {
       state.assignmentForm.scheduleMode = 'date';
+      state.assignmentForm.selectedDate = '';
+      state.assignmentForm.batchConfirmPreviousDate = null;
       state.assignmentForm.timeNotice = '';
     } else if (assignmentHasSelectedIndividualizedTimes()) state.assignmentForm.batchConfirmMode = mode;
     else applyAssignmentBatchMode(mode);
     render();
     window.requestAnimationFrame(() => app.querySelector(state.assignmentForm?.batchConfirmMode ? '[data-action="confirm-assignment-batch-time"]' : mode === 'date' ? '[data-action="assignment-date"]' : `[data-action="set-schedule-mode"][data-mode="${mode}"]`)?.focus({ preventScroll: true }));
   }
-  if (action === 'apply-assignment-batch-date' && state.assignmentForm?.scheduleMode === 'date' && state.assignmentForm.selectedDate) {
-    if (assignmentHasSelectedIndividualizedTimes()) state.assignmentForm.batchConfirmMode = 'date';
-    else applyAssignmentBatchMode('date');
-    render();
-    window.requestAnimationFrame(() => app.querySelector(state.assignmentForm?.batchConfirmMode ? '[data-action="confirm-assignment-batch-time"]' : '[data-action="apply-assignment-batch-date"]')?.focus({ preventScroll: true }));
-  }
   if (action === 'close-assignment-batch-confirm' && state.assignmentForm?.batchConfirmMode && (target.matches('button') || event.target === target)) {
     const mode = state.assignmentForm.batchConfirmMode;
+    if (mode === 'date' && state.assignmentForm.batchConfirmPreviousDate !== null) {
+      state.assignmentForm.selectedDate = state.assignmentForm.batchConfirmPreviousDate;
+    }
     state.assignmentForm.batchConfirmMode = '';
+    state.assignmentForm.batchConfirmPreviousDate = null;
     render();
-    const selector = mode === 'date' ? '[data-action="apply-assignment-batch-date"]' : `[data-action="set-schedule-mode"][data-mode="${mode}"]`;
+    const selector = mode === 'date' ? '[data-action="assignment-date"]' : `[data-action="set-schedule-mode"][data-mode="${mode}"]`;
     window.requestAnimationFrame(() => app.querySelector(selector)?.focus({ preventScroll: true }));
   }
   if (action === 'confirm-assignment-batch-time' && state.assignmentForm?.batchConfirmMode) {
     const mode = state.assignmentForm.batchConfirmMode;
     state.assignmentForm.batchConfirmMode = '';
     applyAssignmentBatchMode(mode);
+    state.assignmentForm.batchConfirmPreviousDate = null;
     render();
-    const selector = mode === 'date' ? '[data-action="apply-assignment-batch-date"]' : `[data-action="set-schedule-mode"][data-mode="${mode}"]`;
+    const selector = mode === 'date' ? '[data-action="assignment-date"]' : `[data-action="set-schedule-mode"][data-mode="${mode}"]`;
     window.requestAnimationFrame(() => app.querySelector(selector)?.focus({ preventScroll: true }));
   }
   if (action === 'open-single-assignment-time' && state.assignmentForm) {
@@ -4924,9 +5170,10 @@ app.addEventListener('change', async (event) => {
     return;
   }
   const teachingClassSelect = event.target.closest('select[data-action="teaching-class-field"]');
-  if (teachingClassSelect && state.teachingClassDraft) {
+  if (teachingClassSelect && (state.teachingClassDraft || state.teachingClassBatchDraft)) {
     const field = teachingClassSelect.dataset.teachingClassField;
-    updateTeachingClassDraftField(field, teachingClassSelect.value);
+    if (state.teachingClassBatchDraft) updateTeachingClassBatchDraftField(field, teachingClassSelect.value);
+    else updateTeachingClassDraftField(field, teachingClassSelect.value);
     render();
     window.requestAnimationFrame(() => app.querySelector(`select[data-teaching-class-field="${field}"]`)?.focus({ preventScroll: true }));
     return;
@@ -4969,9 +5216,22 @@ app.addEventListener('change', async (event) => {
   }
   const dateInput = event.target.closest('[data-action="assignment-date"]');
   if (dateInput && state.assignmentForm) {
+    const previousDate = state.assignmentForm.selectedDate;
     state.assignmentForm.selectedDate = dateInput.value;
     state.assignmentForm.timeNotice = '';
+    if (dateInput.value) {
+      if (assignmentHasSelectedIndividualizedTimes()) {
+        state.assignmentForm.batchConfirmPreviousDate = previousDate;
+        state.assignmentForm.batchConfirmMode = 'date';
+      } else {
+        state.assignmentForm.batchConfirmPreviousDate = null;
+        applyAssignmentBatchMode('date');
+      }
+    }
     render();
+    if (state.assignmentForm?.batchConfirmMode) {
+      window.requestAnimationFrame(() => app.querySelector('[data-action="confirm-assignment-batch-time"]')?.focus({ preventScroll: true }));
+    }
     return;
   }
   const assignmentTimeDate = event.target.closest('[data-action="assignment-time-date"]');
@@ -5030,8 +5290,14 @@ app.addEventListener('change', async (event) => {
 
 app.addEventListener('input', (event) => {
   const teachingClassInput = event.target.closest('input[data-action="teaching-class-field"]');
-  if (teachingClassInput && state.teachingClassDraft) {
-    updateTeachingClassDraftField(teachingClassInput.dataset.teachingClassField, teachingClassInput.value);
+  if (teachingClassInput && (state.teachingClassDraft || state.teachingClassBatchDraft)) {
+    const rawRowIndex = teachingClassInput.dataset.teachingClassRowIndex;
+    const rowIndex = rawRowIndex === undefined ? null : Number(rawRowIndex);
+    if (state.teachingClassBatchDraft) {
+      updateTeachingClassBatchDraftField(teachingClassInput.dataset.teachingClassField, teachingClassInput.value, rowIndex);
+    } else {
+      updateTeachingClassDraftField(teachingClassInput.dataset.teachingClassField, teachingClassInput.value);
+    }
     return;
   }
   const academicYearInput = event.target.closest('[data-action="academic-year"]');
@@ -5071,7 +5337,9 @@ app.addEventListener('input', (event) => {
 app.addEventListener('submit', (event) => {
   if (!event.target.matches('[data-teaching-class-form]')) return;
   event.preventDefault();
-  app.querySelector('[data-action="save-teaching-class"]')?.click();
+  app.querySelector(state.teachingClassBatchDraft
+    ? '[data-action="save-teaching-class-batch"]'
+    : '[data-action="save-teaching-class"]')?.click();
 });
 
 app.addEventListener('pointerdown', (event) => {

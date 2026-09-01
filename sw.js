@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'teacher-classroom-assistant-';
-const CACHE_NAME = `${CACHE_PREFIX}pwa-main-20260830-1`;
+const CACHE_NAME = `${CACHE_PREFIX}pwa-main-20260901-production-fixes-1`;
 const APP_SHELL = [
   './',
   './index.html',
@@ -11,9 +11,9 @@ const APP_SHELL = [
   './apple-touch-icon.png',
   './preview-v2/',
   './preview-v2/index.html',
-  './preview-v2/styles.css?v=20260830-pwa-main-1',
-  './preview-v2/app.js?v=20260830-pwa-main-1',
-  './preview-v2/core.mjs?v=20260830-pwa-main-1'
+  './preview-v2/styles.css?v=20260901-production-fixes-1',
+  './preview-v2/app.js?v=20260901-production-fixes-1',
+  './preview-v2/core.mjs?v=20260901-production-fixes-1'
 ];
 
 function cachesToDelete(keys) {
