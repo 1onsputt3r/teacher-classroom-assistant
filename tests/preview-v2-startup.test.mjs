@@ -171,6 +171,7 @@ test('共通分類沒有可用課表時仍開啟表單並顯示明確排程驗�
     const schedules = JSON.parse(stored.get(key));
     for (const year of Object.values(schedules.byAcademicYear)) year.versions = [];
     stored.set(key, JSON.stringify(schedules));
+    stored.set(`teacher-assistant-preview-v2-schedule-v2${suffix}`, JSON.stringify({}));
   });
 
   values.handlers.click({ target: actionTarget('open-assignment-hub') });
