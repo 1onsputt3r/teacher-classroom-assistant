@@ -93,8 +93,8 @@ button.schedule-row:active { background: rgba(37, 103, 89, .05); }
 .day-empty p { margin-bottom: 0; color: var(--muted); }
 .prototype-note { margin: 18px 4px 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
 
-.modal-backdrop { position: fixed; z-index: 50; inset: 0; padding: 20px 16px calc(20px + env(safe-area-inset-bottom)); background: rgba(24, 31, 29, .55); display: flex; align-items: flex-end; justify-content: center; backdrop-filter: blur(5px); }
-.modal-card { width: min(100%, 560px); max-height: min(760px, calc(100vh - 40px)); overflow: auto; padding: 20px; border-radius: 24px; background: var(--paper); box-shadow: var(--shadow); animation: rise .2s ease-out; }
+.modal-backdrop { position: fixed; z-index: 50; inset: 0; width: 100%; min-height: 100svh; height: 100vh; height: 100dvh; padding: calc(20px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) calc(20px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left)); overflow: hidden; background: rgba(24, 31, 29, .55); display: flex; align-items: flex-end; justify-content: center; backdrop-filter: blur(5px); }
+.modal-card { width: min(100%, 560px); min-height: 0; max-height: min(760px, 100%); overflow: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 20px; border-radius: 24px; background: var(--paper); box-shadow: var(--shadow); animation: rise .2s ease-out; }
 @keyframes rise { from { transform: translateY(18px); opacity: .7; } }
 .modal-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .modal-heading h2 { margin: 0; font-size: 26px; }
@@ -252,6 +252,12 @@ button.schedule-row:active { background: rgba(37, 103, 89, .05); }
 .exam-batch-choice-grid { margin-top: 9px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .exam-batch-choice-grid button { min-width: 0; min-height: 48px; padding: 5px; border: 1px solid #bca9c2; border-radius: 11px; background: white; color: var(--exam-dark); font-size: 12px; font-weight: 850; }
 .exam-batch-choice-grid button:active { background: var(--exam-soft); }
+.exam-batch-choice-grid button.selected { border-color: var(--exam); background: var(--exam-soft); }
+.exam-batch-date-fields { min-width: 0; margin-top: 12px; padding-top: 12px; border-top: 1px solid #dfd2e3; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.exam-batch-date-fields label { min-width: 0; display: grid; gap: 7px; color: var(--ink); font-size: 12px; font-weight: 800; }
+.exam-batch-date-fields .date-field { margin-top: 0; }
+.exam-batch-date-fields input, .exam-batch-date-fields select { width: 100%; min-width: 0; min-height: 50px; padding: 0 12px; border: 1px solid #bdc8c3; border-radius: 12px; background: white; color: var(--ink); font: inherit; font-size: 16px; }
+.exam-batch-date-fields > small { color: var(--muted); font-size: 12px; line-height: 1.55; }
 .exam-batch-time > p { margin: 8px 1px 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .exam-time-list-heading { margin-top: 15px; padding: 0 1px 7px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .exam-time-list-heading strong { font-size: 12px; }
@@ -783,6 +789,12 @@ body:has(.draw-sheet-backdrop) { overflow: hidden; }
 .common-page-hero h1 { font-size: clamp(25px, 7vw, 34px); }
 .common-page-hero > p:last-child { max-width: 530px; margin: 10px 0 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
 .exam-hub-list { display: grid; gap: 9px; }
+.common-record-sections { display: grid; gap: 18px; }
+.common-record-section { min-width: 0; }
+.common-record-section-heading { min-height: 32px; margin: 0 2px 7px; display: flex; align-items: center; gap: 8px; }
+.common-record-section-heading h2 { margin: 0; font-size: 16px; }
+.common-record-section-heading span { min-width: 25px; min-height: 25px; padding: 0 7px; border-radius: 999px; background: #e8e9e5; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12px; font-weight: 850; }
+.common-section-empty { margin: 0; padding: 15px 14px; border: 1px dashed #d5d9d4; border-radius: 14px; color: var(--muted); font-size: 12px; line-height: 1.55; text-align: center; }
 .exam-hub-card { width: 100%; min-height: 78px; padding: 12px 13px; border: 1px solid #d7c8dc; border-radius: 17px; background: var(--paper); display: grid; align-items: center; gap: 11px; color: inherit; text-align: left; box-shadow: 0 7px 22px rgba(48,38,52,.05); }
 .exam-hub-card:active { background: #fbf7fc; transform: scale(.99); }
 .exam-group-card { grid-template-columns: 44px minmax(0, 1fr) auto; }

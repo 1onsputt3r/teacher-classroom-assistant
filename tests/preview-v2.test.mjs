@@ -516,10 +516,10 @@ test('四鍵底部導覽將本堂課歸在今日，其餘主頁各自標示', ()
   assert.equal(bottomNavigationActiveTab('draw'), '');
 });
 
-test('底部導覽只在五個主頁且沒有彈出視窗時顯示', () => {
+test('底部導覽在五個主頁保持顯示，彈出視窗不會讓版面高度跳動', () => {
   for (const page of ['today', 'course', 'assignment-hub', 'exam-hub', 'settings']) {
     assert.equal(shouldShowBottomNavigation(page), true);
-    assert.equal(shouldShowBottomNavigation(page, true), false);
+    assert.equal(shouldShowBottomNavigation(page, true), true);
   }
   for (const page of ['homework', 'exam-attendance', 'reminders', 'draw', 'assignment-form', 'exam-form', 'academic-period-settings', 'teaching-classes', 'teaching-class-form', 'data-sync']) {
     assert.equal(shouldShowBottomNavigation(page), false);

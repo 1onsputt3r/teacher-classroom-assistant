@@ -359,8 +359,8 @@ export function bottomNavigationActiveTab(page) {
   return BOTTOM_NAVIGATION_PAGE_TABS[page] || '';
 }
 
-export function shouldShowBottomNavigation(page, hasModal = false) {
-  return !hasModal && Boolean(bottomNavigationActiveTab(page));
+export function shouldShowBottomNavigation(page, _hasModal = false) {
+  return Boolean(bottomNavigationActiveTab(page));
 }
 
 export const COURSE_CATALOG = {
@@ -1663,31 +1663,45 @@ function isValidDateKey(dateKey) {
 }
 
 export function resolveIndependentExamTimes({ weeklySchedules, session, courses = [], mode, dateKey = '', period = null, minDate = '' }) {
-  if (mode !== 'common-time') {
+  if (mode !== 'common-time' && mode !== 'date') {
     return resolveExamTargets({ weeklySchedules, session, courses, mode });
   }
   const targets = {};
   const errors = [];
   for (const course of courses) {
     const courseKey = courseDataKey(course);
-    if (!isValidDateKey(dateKey) || !period) {
-      errors.push({ courseKey, classLabel: course.classLabel, reason: '尚未選擇共同日期與節次' });
+    if (!isValidDateKey(dateKey)) {
+      errors.push({
+        courseKey,
+        classLabel: course.classLabel,
+        reason: mode === 'date' ? '尚未選擇共同日期' : '尚未選擇共同日期與節次'
+      });
       continue;
     }
     if (minDate && dateKey < minDate) {
       errors.push({ courseKey, classLabel: course.classLabel, reason: '考試日期不可早於可安排日期' });
       continue;
     }
-    targets[courseKey] = {
-      course: { ...course },
-      due: {
-        dateKey,
-        slotId: period.id,
-        period: period.period,
-        start: period.start,
-        end: period.end
-      }
-    };
+    if (period) {
+      targets[courseKey] = {
+        course: { ...course },
+        due: {
+          dateKey,
+          slotId: period.id,
+          period: period.period,
+          start: period.start,
+          end: period.end
+        }
+      };
+      continue;
+    }
+    if (mode === 'common-time') {
+      errors.push({ courseKey, classLabel: course.classLabel, reason: '尚未選擇共同日期與節次' });
+      continue;
+    }
+    const due = findNextCourseOccurrence(weeklySchedules, courseKey, dateKey, null, 0);
+    if (due) targets[courseKey] = { course: { ...course }, due };
+    else errors.push({ courseKey, classLabel: course.classLabel, reason: '選擇日期當天沒有這門課' });
   }
   return { targets, errors };
 }
@@ -1962,6 +1976,42 @@ function homeworkSubmissionStatusCounts(submissions = {}) {
   };
 }
 
+function recordDateKey(value) {
+  const match = String(value || '').match(/^\d{4}-\d{2}-\d{2}/);
+  return match?.[0] || '';
+}
+
+function latestRecordDateKey(records = [], fields = []) {
+  return records.flatMap((record) => fields.map((field) => recordDateKey(record?.[field])))
+    .filter(Boolean)
+    .sort()
+    .at(-1) || '';
+}
+
+function assignmentTargetProgress(target = {}) {
+  const checks = [...(target.checks || []), ...(target.lastCheck ? [target.lastCheck] : [])];
+  const submissions = Object.values(target.submissions || {});
+  return {
+    processed: Boolean(checks.length || submissions.length),
+    latestProcessedDateKey: [
+      latestRecordDateKey(checks, ['dateKey', 'savedAt']),
+      latestRecordDateKey(submissions, ['completedAt', 'missingDateKey', 'recordedAt'])
+    ].filter(Boolean).sort().at(-1) || ''
+  };
+}
+
+function examTargetProgress(target = {}) {
+  const checks = [...(target.checks || []), ...(target.lastCheck ? [target.lastCheck] : [])];
+  const makeups = Object.values(target.makeups || {});
+  return {
+    processed: Boolean(checks.length || makeups.length),
+    latestProcessedDateKey: [
+      latestRecordDateKey(checks, ['dateKey', 'savedAt']),
+      latestRecordDateKey(makeups, ['completedAt', 'absentDateKey', 'recordedAt'])
+    ].filter(Boolean).sort().at(-1) || ''
+  };
+}
+
 function seedCommonRecordGroups(availableCourses, catalog, collectionName) {
   const groups = new Map();
   for (const course of Array.isArray(availableCourses) ? availableCourses : []) {
@@ -1983,7 +2033,7 @@ export function buildCommonAssignmentView(assignments = {}, catalog = COURSE_CAT
   const groups = seedCommonRecordGroups(availableCourses, catalog, 'assignmentMap');
   for (const assignment of Object.values(assignments || {})) {
     for (const [courseKey, target] of Object.entries(assignment.targets || {})) {
-      const hasHistory = Boolean((target.checks || []).length || Object.keys(target.submissions || {}).length);
+      const hasHistory = Boolean(target.lastCheck || (target.checks || []).length || Object.keys(target.submissions || {}).length);
       if (target.status === 'cancelled' && !hasHistory) continue;
       const groupMeta = commonRecordGroup(target.course, catalog);
       if (!groups.has(groupMeta.groupKey)) groups.set(groupMeta.groupKey, { ...groupMeta, assignmentMap: new Map(), availableCourseMap: new Map() });
@@ -1999,6 +2049,7 @@ export function buildCommonAssignmentView(assignments = {}, catalog = COURSE_CAT
         });
       }
       const counts = homeworkSubmissionStatusCounts(target.submissions);
+      const progress = assignmentTargetProgress(target);
       const incompleteSeats = target.lastCheck?.summary?.incompleteSeats
         || Object.entries(target.lastCheck?.seatStates || {}).filter(([, value]) => value === 'incomplete').map(([seat]) => Number(seat));
       group.assignmentMap.get(assignment.id).classes.push({
@@ -2012,7 +2063,9 @@ export function buildCommonAssignmentView(assignments = {}, catalog = COURSE_CAT
         checkCount: (target.checks || []).length,
         incompleteCount: incompleteSeats.length,
         pendingSubmissionCount: counts.pending,
-        completedSubmissionCount: counts.completed
+        completedSubmissionCount: counts.completed,
+        processed: progress.processed,
+        latestProcessedDateKey: progress.latestProcessedDateKey
       });
     }
   }
@@ -2031,22 +2084,40 @@ export function buildCommonAssignmentView(assignments = {}, catalog = COURSE_CAT
         || Number(left.due?.period || 99) - Number(right.due?.period || 99)
         || left.classLabel.localeCompare(right.classLabel, 'zh-Hant'));
       const dateKeys = [...new Set(classes.map((item) => item.due?.dateKey).filter(Boolean))].sort();
+      const firstDateKey = dateKeys[0] || '';
+      const firstPeriod = classes.filter((item) => item.due?.dateKey === firstDateKey)
+        .reduce((minimum, item) => Math.min(minimum, Number(item.due?.period || 99)), 99);
+      const processedClasses = classes.filter((item) => item.processed);
       return {
         ...assignment,
         classes,
         classCount: new Set(classes.map((item) => item.courseKey)).size,
         activeClassCount: classes.filter((item) => item.targetStatus !== 'cancelled').length,
         checkedClassCount: classes.filter((item) => item.checkStatus === 'checked').length,
+        processedClassCount: processedClasses.length,
+        progressStatus: processedClasses.length ? 'processed' : 'unprocessed',
+        latestProcessedDateKey: processedClasses.map((item) => item.latestProcessedDateKey).filter(Boolean).sort().at(-1) || '',
         pendingSubmissionCount: classes.reduce((sum, item) => sum + item.pendingSubmissionCount, 0),
         completedSubmissionCount: classes.reduce((sum, item) => sum + item.completedSubmissionCount, 0),
         dateKeys,
-        firstDateKey: dateKeys[0] || '',
+        firstDateKey,
+        firstPeriod,
         lastDateKey: dateKeys.at(-1) || ''
       };
-    }).sort((left, right) => right.pendingSubmissionCount - left.pendingSubmissionCount
-      || right.lastDateKey.localeCompare(left.lastDateKey)
-      || left.title.localeCompare(right.title, 'zh-Hant')
-      || left.assignmentId.localeCompare(right.assignmentId));
+    }).sort((left, right) => {
+      if (left.progressStatus !== right.progressStatus) return left.progressStatus === 'unprocessed' ? -1 : 1;
+      if (left.progressStatus === 'unprocessed') {
+        return String(left.firstDateKey || '9999-12-31').localeCompare(String(right.firstDateKey || '9999-12-31'))
+          || left.firstPeriod - right.firstPeriod
+          || left.title.localeCompare(right.title, 'zh-Hant')
+          || left.assignmentId.localeCompare(right.assignmentId);
+      }
+      return Number(right.pendingSubmissionCount > 0) - Number(left.pendingSubmissionCount > 0)
+        || right.pendingSubmissionCount - left.pendingSubmissionCount
+        || right.latestProcessedDateKey.localeCompare(left.latestProcessedDateKey)
+        || left.title.localeCompare(right.title, 'zh-Hant')
+        || left.assignmentId.localeCompare(right.assignmentId);
+    });
     return {
       groupKey: group.groupKey,
       system: group.system,
@@ -2126,7 +2197,7 @@ export function buildCommonExamView(exams = {}, catalog = COURSE_CATALOG, availa
   const groups = seedCommonRecordGroups(availableCourses, catalog, 'examMap');
   for (const exam of Object.values(exams || {})) {
     for (const [courseKey, target] of Object.entries(exam.targets || {})) {
-      const hasHistory = Boolean((target.checks || []).length || Object.keys(target.makeups || {}).length);
+      const hasHistory = Boolean(target.lastCheck || (target.checks || []).length || Object.keys(target.makeups || {}).length);
       if (target.status === 'cancelled' && !hasHistory) continue;
       const groupMeta = commonRecordGroup(target.course, catalog);
       if (!groups.has(groupMeta.groupKey)) groups.set(groupMeta.groupKey, { ...groupMeta, examMap: new Map(), availableCourseMap: new Map() });
@@ -2142,6 +2213,7 @@ export function buildCommonExamView(exams = {}, catalog = COURSE_CATALOG, availa
         });
       }
       const counts = makeupStatusCounts(target.makeups);
+      const progress = examTargetProgress(target);
       const absentSeats = target.lastCheck?.summary?.absentSeats
         || Object.entries(target.lastCheck?.seatStates || {}).filter(([, value]) => value === 'absent').map(([seat]) => Number(seat));
       group.examMap.get(exam.id).classes.push({
@@ -2155,7 +2227,9 @@ export function buildCommonExamView(exams = {}, catalog = COURSE_CATALOG, availa
         checkCount: (target.checks || []).length,
         absentCount: absentSeats.length,
         pendingMakeupCount: counts.pending,
-        completedMakeupCount: counts.completed
+        completedMakeupCount: counts.completed,
+        processed: progress.processed,
+        latestProcessedDateKey: progress.latestProcessedDateKey
       });
     }
   }
@@ -2172,22 +2246,40 @@ export function buildCommonExamView(exams = {}, catalog = COURSE_CATALOG, availa
         || Number(left.due?.period || 99) - Number(right.due?.period || 99)
         || left.classLabel.localeCompare(right.classLabel, 'zh-Hant'));
       const dateKeys = [...new Set(classes.map((item) => item.due?.dateKey).filter(Boolean))].sort();
+      const firstDateKey = dateKeys[0] || '';
+      const firstPeriod = classes.filter((item) => item.due?.dateKey === firstDateKey)
+        .reduce((minimum, item) => Math.min(minimum, Number(item.due?.period || 99)), 99);
+      const processedClasses = classes.filter((item) => item.processed);
       return {
         ...exam,
         classes,
         classCount: new Set(classes.map((item) => item.courseKey)).size,
         activeClassCount: classes.filter((item) => item.targetStatus !== 'cancelled').length,
         checkedClassCount: classes.filter((item) => item.attendanceStatus === 'checked').length,
+        processedClassCount: processedClasses.length,
+        progressStatus: processedClasses.length ? 'processed' : 'unprocessed',
+        latestProcessedDateKey: processedClasses.map((item) => item.latestProcessedDateKey).filter(Boolean).sort().at(-1) || '',
         pendingMakeupCount: classes.reduce((sum, item) => sum + item.pendingMakeupCount, 0),
         completedMakeupCount: classes.reduce((sum, item) => sum + item.completedMakeupCount, 0),
         dateKeys,
-        firstDateKey: dateKeys[0] || '',
+        firstDateKey,
+        firstPeriod,
         lastDateKey: dateKeys.at(-1) || ''
       };
-    }).sort((left, right) => right.pendingMakeupCount - left.pendingMakeupCount
-      || right.lastDateKey.localeCompare(left.lastDateKey)
-      || left.title.localeCompare(right.title, 'zh-Hant')
-      || left.examId.localeCompare(right.examId));
+    }).sort((left, right) => {
+      if (left.progressStatus !== right.progressStatus) return left.progressStatus === 'unprocessed' ? -1 : 1;
+      if (left.progressStatus === 'unprocessed') {
+        return String(left.firstDateKey || '9999-12-31').localeCompare(String(right.firstDateKey || '9999-12-31'))
+          || left.firstPeriod - right.firstPeriod
+          || left.title.localeCompare(right.title, 'zh-Hant')
+          || left.examId.localeCompare(right.examId);
+      }
+      return Number(right.pendingMakeupCount > 0) - Number(left.pendingMakeupCount > 0)
+        || right.pendingMakeupCount - left.pendingMakeupCount
+        || right.latestProcessedDateKey.localeCompare(left.latestProcessedDateKey)
+        || left.title.localeCompare(right.title, 'zh-Hant')
+        || left.examId.localeCompare(right.examId);
+    });
     return {
       groupKey: group.groupKey,
       system: group.system,

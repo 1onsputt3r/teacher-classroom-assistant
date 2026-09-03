@@ -100,7 +100,7 @@ import {
   validateManagedScheduleVersionDraft,
   validateTeachingClassBatchDraft,
   validateTeachingClassDraft
-} from './core.mjs?v=20260901-production-fixes-1';
+} from './core.mjs?v=20260903-workflow-fixes-1';
 
 const app = document.querySelector('#app');
 const TEST_DATA_PROFILE = 'integration-v1';
@@ -1248,19 +1248,27 @@ function renderAssignmentGroupCards(groups) {
 }
 
 function renderCommonAssignmentList(group) {
-  const cards = group.assignments.map((assignment) => {
+  const renderCards = (assignments) => assignments.map((assignment) => {
     const status = assignment.pendingSubmissionCount
       ? `待補交 ${assignment.pendingSubmissionCount} 人`
-      : assignment.checkedClassCount === assignment.classCount
+      : assignment.progressStatus === 'unprocessed'
+        ? '尚未檢查'
+        : assignment.processedClassCount === assignment.classCount
         ? '各班均已檢查'
-        : `${assignment.checkedClassCount}/${assignment.classCount} 班已檢查`;
+        : `${assignment.processedClassCount}/${assignment.classCount} 班已檢查`;
     return `<button type="button" class="exam-hub-card exam-definition-card homework-hub-card" data-action="open-common-assignment" data-assignment-id="${escapeHtml(assignment.assignmentId)}">
       <span class="exam-hub-card-copy"><strong>${escapeHtml(assignment.title)}</strong><small>${examDateRange(assignment)}・共 ${assignment.classCount} 班${assignment.isDemo ? '・示範資料' : ''}</small></span>
       <span class="exam-hub-card-meta"><em class="${assignment.pendingSubmissionCount ? '' : 'quiet'}">${status}</em><i aria-hidden="true">›</i></span>
     </button>`;
   }).join('');
-  const list = cards
-    ? `<section class="exam-hub-list" aria-label="${escapeHtml(group.label)}作業">${cards}</section>`
+  const unprocessed = group.assignments.filter((assignment) => assignment.progressStatus === 'unprocessed');
+  const processed = group.assignments.filter((assignment) => assignment.progressStatus === 'processed');
+  const section = (title, assignments, emptyMessage) => `<section class="common-record-section" aria-labelledby="assignment-section-${title === '未檢查' ? 'pending' : 'checked'}">
+    <div class="common-record-section-heading"><h2 id="assignment-section-${title === '未檢查' ? 'pending' : 'checked'}">${title}</h2><span>${assignments.length}</span></div>
+    ${assignments.length ? `<div class="exam-hub-list">${renderCards(assignments)}</div>` : `<p class="common-section-empty">${emptyMessage}</p>`}
+  </section>`;
+  const list = group.assignments.length
+    ? `<div class="common-record-sections" aria-label="${escapeHtml(group.label)}作業">${section('未檢查', unprocessed, '目前沒有尚未檢查的作業。')}${section('已檢查', processed, '目前還沒有已檢查的作業。')}</div>`
     : '<p class="common-empty">這個年級與科目目前還沒有作業。</p>';
   return `${list}
     <button type="button" class="common-add-button homework-add-button" data-action="add-common-assignment">＋ 新增作業</button>`;
@@ -1456,19 +1464,27 @@ function renderExamGroupCards(groups) {
 }
 
 function renderCommonExamList(group) {
-  const cards = group.exams.map((exam) => {
+  const renderCards = (exams) => exams.map((exam) => {
     const status = exam.pendingMakeupCount
       ? `待補考 ${exam.pendingMakeupCount} 人`
-      : exam.checkedClassCount === exam.classCount
-        ? '各班均已點名'
-        : `${exam.checkedClassCount}/${exam.classCount} 班已點名`;
+      : exam.progressStatus === 'unprocessed'
+        ? '尚未考試'
+        : exam.processedClassCount === exam.classCount
+          ? '各班均已考試'
+          : `${exam.processedClassCount}/${exam.classCount} 班已考試`;
     return `<button type="button" class="exam-hub-card exam-definition-card" data-action="open-common-exam" data-exam-id="${escapeHtml(exam.examId)}">
       <span class="exam-hub-card-copy"><strong>${escapeHtml(exam.title)}</strong><small>${examDateRange(exam)}・共 ${exam.classCount} 班${exam.isDemo ? '・示範資料' : ''}</small></span>
       <span class="exam-hub-card-meta"><em class="${exam.pendingMakeupCount ? '' : 'quiet'}">${status}</em><i aria-hidden="true">›</i></span>
     </button>`;
   }).join('');
-  const list = cards
-    ? `<section class="exam-hub-list" aria-label="${escapeHtml(group.label)}考試">${cards}</section>`
+  const unprocessed = group.exams.filter((exam) => exam.progressStatus === 'unprocessed');
+  const processed = group.exams.filter((exam) => exam.progressStatus === 'processed');
+  const section = (title, exams, emptyMessage) => `<section class="common-record-section" aria-labelledby="exam-section-${title === '未考試' ? 'pending' : 'checked'}">
+    <div class="common-record-section-heading"><h2 id="exam-section-${title === '未考試' ? 'pending' : 'checked'}">${title}</h2><span>${exams.length}</span></div>
+    ${exams.length ? `<div class="exam-hub-list">${renderCards(exams)}</div>` : `<p class="common-section-empty">${emptyMessage}</p>`}
+  </section>`;
+  const list = group.exams.length
+    ? `<div class="common-record-sections" aria-label="${escapeHtml(group.label)}考試">${section('未考試', unprocessed, '目前沒有尚未考試的項目。')}${section('已考試', processed, '目前還沒有已考試的項目。')}</div>`
     : '<p class="common-empty">這個年級與科目目前還沒有考試。</p>';
   return `${list}
     <button type="button" class="common-add-button" data-action="add-common-exam">＋ 新增考試</button>`;
@@ -2808,7 +2824,7 @@ function applyIndependentExamTimes(mode, courseKeys, { dateKey = '', periodId = 
     mode,
     dateKey,
     period: mode === 'common-time' ? periodDefinition(periodId, dateKey) : null,
-    minDate: mode === 'common-time' ? session.dateKey : ''
+    minDate: mode === 'common-time' || mode === 'date' ? session.dateKey : ''
   });
   if (mode === 'common-time' && resolution.errors.length) return resolution;
   const nextErrors = { ...(form.targetErrors || {}) };
@@ -2819,9 +2835,25 @@ function applyIndependentExamTimes(mode, courseKeys, { dateKey = '', periodId = 
   form.targetErrors = nextErrors;
   form.scheduleDirty = true;
   const successCount = Object.keys(scheduledTargets).length;
-  const modeLabel = mode === 'next' ? '下次上課' : mode === 'next-week' ? '下週同一堂' : '共同考試時間';
+  const modeLabel = mode === 'next'
+    ? '下次上課'
+    : mode === 'next-week'
+      ? '下週同一堂'
+      : mode === 'date'
+        ? '共同日期'
+        : '共同日期與節次';
   form.timeNotice = successCount ? `已將${modeLabel}套用至 ${successCount} 個班級，可再逐班修改。` : `無法套用${modeLabel}。`;
   return resolution;
+}
+
+function applyExamBatchDate(courseKeys = state.examForm?.selectedCourseKeys || []) {
+  const form = state.examForm;
+  if (!form?.independentSchedule || !form.commonDateKey) return null;
+  const mode = form.commonPeriodId ? 'common-time' : 'date';
+  return applyIndependentExamTimes(mode, courseKeys, {
+    dateKey: form.commonDateKey,
+    periodId: form.commonPeriodId
+  });
 }
 
 function examTimeEditor(form) {
@@ -2873,8 +2905,13 @@ function renderExamForm() {
     return `<button type="button" class="class-choice exam-choice ${isSelected ? 'selected' : ''}" data-action="toggle-exam-form-course" data-course-key="${escapeHtml(key)}" aria-pressed="${isSelected}">${escapeHtml(course.classLabel)}</button>`;
   }).join('');
   const modeButton = (value, label) => `<button type="button" class="schedule-choice exam-choice ${form.scheduleMode === value ? 'selected' : ''}" data-action="set-exam-schedule-mode" data-mode="${value}" aria-pressed="${form.scheduleMode === value}">${label}</button>`;
+  const batchDateKey = form.commonDateKey || examSchedulingSession(form).dateKey;
+  const commonPeriodOptions = `<option value="">依各班當日課表</option>${periodTuplesForDate(batchDateKey).map(([id, period, start, end]) => `<option value="${id}"${form.commonPeriodId === id ? ' selected' : ''}>第 ${period} 節　${start}～${end}</option>`).join('')}`;
+  const examBatchDateFields = form.batchDateVisible
+    ? `<div class="exam-batch-date-fields"><label class="date-field">考試日期<input type="date" data-action="exam-batch-date" min="${escapeHtml(examSchedulingSession(form).dateKey)}" value="${escapeHtml(form.commonDateKey)}" /></label><label>共同節次（選填）<select data-action="exam-batch-period">${commonPeriodOptions}</select></label><small>未指定共同節次時，各班使用這一天自己的上課節次。</small></div>`
+    : '';
   const timingSection = form.independentSchedule
-    ? `<section class="form-section exam-independent-time-section"><div class="form-section-title"><div><strong>各班考試時間</strong><span>可先批次套用，再逐班修改；套用後各班時間仍然獨立</span></div></div><div class="exam-batch-time"><strong>批次套用時間</strong><div class="exam-batch-choice-grid"><button type="button" data-action="apply-exam-batch-time" data-mode="next" ${selectedCourses.length ? '' : 'disabled'}>下次上課</button><button type="button" data-action="apply-exam-batch-time" data-mode="next-week" ${selectedCourses.length ? '' : 'disabled'}>下週同堂</button><button type="button" data-action="open-exam-common-time" ${selectedCourses.length ? '' : 'disabled'}>共同時間</button></div>${form.timeNotice ? `<p>${escapeHtml(form.timeNotice)}</p>` : ''}</div><div class="exam-time-list-heading"><strong>實際時間</strong><span>${selectedCourses.length} 個班級</span></div>${previews ? `<ul class="schedule-preview-list exam-time-list">${previews}</ul>` : '<p class="compact-empty">請先選擇套用班級。</p>'}<div class="form-validation" role="status" ${validation.length ? '' : 'hidden'}>${validation.map((message) => `<span>${escapeHtml(message)}</span>`).join('')}</div></section>`
+    ? `<section class="form-section exam-independent-time-section"><div class="form-section-title"><div><strong>各班考試時間</strong><span>可先批次套用，再逐班修改；套用後各班時間仍然獨立</span></div></div><div class="exam-batch-time"><strong>批次套用時間</strong><div class="exam-batch-choice-grid"><button type="button" data-action="apply-exam-batch-time" data-mode="next" ${selectedCourses.length ? '' : 'disabled'}>下次上課</button><button type="button" data-action="apply-exam-batch-time" data-mode="next-week" ${selectedCourses.length ? '' : 'disabled'}>下週同堂</button><button type="button" class="${form.batchDateVisible ? 'selected' : ''}" data-action="open-exam-common-time" ${selectedCourses.length ? '' : 'disabled'}>選擇日期</button></div>${examBatchDateFields}${form.timeNotice ? `<p>${escapeHtml(form.timeNotice)}</p>` : ''}</div><div class="exam-time-list-heading"><strong>實際時間</strong><span>${selectedCourses.length} 個班級</span></div>${previews ? `<ul class="schedule-preview-list exam-time-list">${previews}</ul>` : '<p class="compact-empty">請先選擇套用班級。</p>'}<div class="form-validation" role="status" ${validation.length ? '' : 'hidden'}>${validation.map((message) => `<span>${escapeHtml(message)}</span>`).join('')}</div></section>`
     : `<section class="form-section"><div class="form-section-title"><div><strong>考試時間</strong><span>每班會依自己的課表解析</span></div></div><div class="schedule-choice-grid">${modeButton('next', '下次上課')}${modeButton('next-week', '下週同一堂')}${modeButton('date', '選擇日期')}</div>${form.scheduleMode === 'date' ? `<label class="date-field">考試日期<input type="date" data-action="exam-date" min="${session.dateKey}" value="${escapeHtml(form.selectedDate)}" /></label>` : ''}</section><section class="form-section"><div class="form-section-title"><div><strong>各班考試課堂</strong><span>建立前確認實際日期與節次</span></div></div>${previews ? `<ul class="schedule-preview-list">${previews}</ul>` : '<p class="compact-empty">尚未選擇班級。</p>'}<div class="form-validation" role="status" ${validation.length ? '' : 'hidden'}>${validation.map((message) => `<span>${escapeHtml(message)}</span>`).join('')}</div></section>`;
   return `
     ${pageHeader(form.examId ? '修改考試' : '新增考試', `${session.course.classLabel}・${session.course.subject}`, 'back-exam-form')}
@@ -2897,8 +2934,6 @@ function openExamForm(examId = null, options = {}) {
     ? Object.fromEntries(Object.entries(exam.targets).filter(([, target]) => target.status !== 'cancelled').map(([courseKey, target]) => [courseKey, { course: target.course, due: target.due, scheduleMode: target.scheduleMode || 'exact' }]))
     : {};
   const baselineDate = session.dateKey > localDateKey(state.now) ? session.dateKey : localDateKey(state.now);
-  const availablePeriods = periodTuplesForDate(baselineDate);
-  const defaultPeriodId = availablePeriods.some(([id]) => id === session.slotId) ? session.slotId : availablePeriods[0][0];
   state.examForm = {
     examId,
     session,
@@ -2918,8 +2953,9 @@ function openExamForm(examId = null, options = {}) {
     targetErrors: {},
     timeNotice: '',
     timeEditor: null,
-    commonDateKey: baselineDate,
-    commonPeriodId: defaultPeriodId
+    batchDateVisible: false,
+    commonDateKey: '',
+    commonPeriodId: ''
   };
   state.page = 'exam-form';
   render();
@@ -3417,7 +3453,7 @@ function openCourseModal(slotId) {
     entryState: row.state
   };
   render();
-  window.requestAnimationFrame(() => app.querySelector(row.course ? '[data-action="enter-course"]' : '[data-action="show-adjust"]')?.focus());
+  window.requestAnimationFrame(() => app.querySelector(row.course ? '[data-action="enter-course"]' : '[data-action="show-adjust"]')?.focus({ preventScroll: true }));
 }
 
 function closeModalAndRestoreFocus() {
@@ -3708,6 +3744,14 @@ function recordClassroomReminder(seat) {
 }
 
 app.addEventListener('click', (event) => {
+  if (pendingNativeDateControl && event.target !== pendingNativeDateControl) {
+    if (finalizePendingNativeDateControl(event.target.closest('[data-action]'))) return;
+  }
+  if (suppressDateTriggeredClick) {
+    event.preventDefault();
+    suppressDateTriggeredClick = false;
+    return;
+  }
   const target = event.target.closest('[data-action]');
   if (!target) return;
   if (target.hasAttribute('data-modal-card')) return;
@@ -3773,13 +3817,13 @@ app.addEventListener('click', (event) => {
     const teachingClassId = classes.some((record) => record.id === currentId) ? currentId : classes[0]?.id || null;
     state.modal = { ...state.modal, mode: 'adjust', teachingClassId };
     render();
-    window.requestAnimationFrame(() => app.querySelector('[data-action="adjust-teaching-class"]')?.focus());
+    window.requestAnimationFrame(() => app.querySelector('[data-action="adjust-teaching-class"]')?.focus({ preventScroll: true }));
   }
   if (action === 'cancel-adjust') {
     const slot = selectedSlot();
     state.modal = { ...state.modal, mode: slot.course ? 'confirm' : 'empty', teachingClassId: slot.course?.teachingClassId || null };
     render();
-    window.requestAnimationFrame(() => app.querySelector('[data-action="show-adjust"]')?.focus());
+    window.requestAnimationFrame(() => app.querySelector('[data-action="show-adjust"]')?.focus({ preventScroll: true }));
   }
   if (action === 'save-adjustment') {
     const slot = selectedSlot();
@@ -3792,18 +3836,18 @@ app.addEventListener('click', (event) => {
     persistScheduleOverrides();
     state.modal = { ...state.modal, mode: 'confirm', teachingClassId: course.teachingClassId };
     showTimedToast('已儲存這一天這一節調課');
-    window.requestAnimationFrame(() => app.querySelector('[data-action="enter-course"]')?.focus());
+    window.requestAnimationFrame(() => app.querySelector('[data-action="enter-course"]')?.focus({ preventScroll: true }));
   }
   if (action === 'request-restore-schedule') {
     state.modal = { ...state.modal, mode: 'restore-confirm' };
     render();
-    window.requestAnimationFrame(() => app.querySelector('[data-action="confirm-restore-schedule"]')?.focus());
+    window.requestAnimationFrame(() => app.querySelector('[data-action="confirm-restore-schedule"]')?.focus({ preventScroll: true }));
   }
   if (action === 'keep-adjustment') {
     const slot = selectedSlot();
     state.modal = { ...state.modal, mode: 'confirm', teachingClassId: slot.course?.teachingClassId || null };
     render();
-    window.requestAnimationFrame(() => app.querySelector('[data-action="request-restore-schedule"]')?.focus());
+    window.requestAnimationFrame(() => app.querySelector('[data-action="request-restore-schedule"]')?.focus({ preventScroll: true }));
   }
   if (action === 'confirm-restore-schedule') {
     const entryDate = state.modal.entryDate;
@@ -3818,7 +3862,7 @@ app.addEventListener('click', (event) => {
     }
     showTimedToast(`已恢復第 ${slot.period} 節原課表`);
     window.requestAnimationFrame(() => {
-      app.querySelector(restoredSlot?.course ? '[data-action="enter-course"]' : '[data-action="show-adjust"]')?.focus();
+      app.querySelector(restoredSlot?.course ? '[data-action="enter-course"]' : '[data-action="show-adjust"]')?.focus({ preventScroll: true });
     });
   }
   if (action === 'enter-course') {
@@ -4847,7 +4891,7 @@ app.addEventListener('click', (event) => {
     } else if (assignmentHasSelectedIndividualizedTimes()) state.assignmentForm.batchConfirmMode = mode;
     else applyAssignmentBatchMode(mode);
     render();
-    window.requestAnimationFrame(() => app.querySelector(state.assignmentForm?.batchConfirmMode ? '[data-action="confirm-assignment-batch-time"]' : mode === 'date' ? '[data-action="assignment-date"]' : `[data-action="set-schedule-mode"][data-mode="${mode}"]`)?.focus({ preventScroll: true }));
+    window.requestAnimationFrame(() => app.querySelector(state.assignmentForm?.batchConfirmMode ? '[data-action="confirm-assignment-batch-time"]' : `[data-action="set-schedule-mode"][data-mode="${mode}"]`)?.focus({ preventScroll: true }));
   }
   if (action === 'close-assignment-batch-confirm' && state.assignmentForm?.batchConfirmMode && (target.matches('button') || event.target === target)) {
     const mode = state.assignmentForm.batchConfirmMode;
@@ -4857,7 +4901,7 @@ app.addEventListener('click', (event) => {
     state.assignmentForm.batchConfirmMode = '';
     state.assignmentForm.batchConfirmPreviousDate = null;
     render();
-    const selector = mode === 'date' ? '[data-action="assignment-date"]' : `[data-action="set-schedule-mode"][data-mode="${mode}"]`;
+    const selector = `[data-action="set-schedule-mode"][data-mode="${mode}"]`;
     window.requestAnimationFrame(() => app.querySelector(selector)?.focus({ preventScroll: true }));
   }
   if (action === 'confirm-assignment-batch-time' && state.assignmentForm?.batchConfirmMode) {
@@ -4866,7 +4910,7 @@ app.addEventListener('click', (event) => {
     applyAssignmentBatchMode(mode);
     state.assignmentForm.batchConfirmPreviousDate = null;
     render();
-    const selector = mode === 'date' ? '[data-action="assignment-date"]' : `[data-action="set-schedule-mode"][data-mode="${mode}"]`;
+    const selector = `[data-action="set-schedule-mode"][data-mode="${mode}"]`;
     window.requestAnimationFrame(() => app.querySelector(selector)?.focus({ preventScroll: true }));
   }
   if (action === 'open-single-assignment-time' && state.assignmentForm) {
@@ -4936,9 +4980,13 @@ app.addEventListener('click', (event) => {
   if (action === 'toggle-exam-form-course' && state.examForm) {
     const courseKey = target.dataset.courseKey;
     const selected = new Set(state.examForm.selectedCourseKeys);
-    if (selected.has(courseKey)) selected.delete(courseKey); else selected.add(courseKey);
+    const wasSelected = selected.has(courseKey);
+    if (wasSelected) selected.delete(courseKey); else selected.add(courseKey);
     state.examForm.selectedCourseKeys = [...selected];
-    if (state.examForm.independentSchedule) state.examForm.timeNotice = '';
+    if (state.examForm.independentSchedule) {
+      state.examForm.timeNotice = '';
+      if (!wasSelected && state.examForm.batchDateVisible && state.examForm.commonDateKey) applyExamBatchDate([courseKey]);
+    }
     render();
   }
   if (action === 'apply-exam-batch-time' && state.examForm?.independentSchedule) {
@@ -4947,15 +4995,10 @@ app.addEventListener('click', (event) => {
     window.requestAnimationFrame(() => app.querySelector(`[data-action="apply-exam-batch-time"][data-mode="${target.dataset.mode}"]`)?.focus({ preventScroll: true }));
   }
   if (action === 'open-exam-common-time' && state.examForm?.independentSchedule) {
-    const session = examSchedulingSession(state.examForm);
-    state.examForm.timeEditor = {
-      scope: 'batch',
-      dateKey: state.examForm.commonDateKey || session.dateKey,
-      periodId: state.examForm.commonPeriodId || periodTuplesForDate(state.examForm.commonDate || localDateKey(state.now))[0][0],
-      minDate: session.dateKey
-    };
+    state.examForm.batchDateVisible = true;
+    state.examForm.timeNotice = '';
     render();
-    window.requestAnimationFrame(() => app.querySelector('[data-action="exam-time-date"]')?.focus());
+    window.requestAnimationFrame(() => app.querySelector('[data-action="open-exam-common-time"]')?.focus({ preventScroll: true }));
   }
   if (action === 'open-single-exam-time' && state.examForm?.independentSchedule) {
     const session = examSchedulingSession(state.examForm);
@@ -5118,7 +5161,181 @@ app.addEventListener('click', (event) => {
   if (action === 'save-exam-check') saveExamAttendance(state.draftExamSeatStates);
 });
 
+const NATIVE_DATE_ACTIONS = new Set([
+  'managed-schedule-form-date',
+  'academic-period-date',
+  'assignment-date',
+  'assignment-time-date',
+  'exam-date',
+  'assignment-class-time-date',
+  'exam-class-time-date',
+  'exam-time-date',
+  'exam-batch-date'
+]);
+let pendingNativeDateControl = null;
+let pendingDatePointerTarget = null;
+let suppressDateTriggeredClick = false;
+const DATE_ACTIONS_REQUIRING_RENDER = new Set([
+  'managed-schedule-form-date',
+  'assignment-date',
+  'exam-date',
+  'assignment-class-time-date',
+  'exam-class-time-date',
+  'exam-batch-date'
+]);
+
+function shouldDeferNativeDateCommit() {
+  try { return Boolean(window.matchMedia?.('(pointer: coarse)').matches); }
+  catch { return false; }
+}
+
+function finishDateControlRender(renderMode) {
+  if (renderMode === 'none') return;
+  if (renderMode === 'defer') window.setTimeout(render, 0);
+  else render();
+}
+
+function commitDateControl(dateControl, renderMode = 'immediate') {
+  const action = dateControl?.dataset?.action;
+  if (!NATIVE_DATE_ACTIONS.has(action)) return false;
+
+  if (action === 'managed-schedule-form-date' && state.scheduleVersionForm) {
+    const startDate = dateControl.value;
+    const canCopy = scheduleVersionsBefore(state.scheduleVersionForm.periodId, startDate).length > 0;
+    state.scheduleVersionForm = {
+      ...state.scheduleVersionForm,
+      startDate,
+      sourceMode: canCopy ? state.scheduleVersionForm.sourceMode : 'blank'
+    };
+    state.scheduleVersionValidation = null;
+    finishDateControlRender(renderMode);
+    return true;
+  }
+
+  if (action === 'academic-period-date' && state.academicPeriodDraft) {
+    const { periodId, field } = dateControl.dataset;
+    state.academicPeriodDraft = {
+      ...state.academicPeriodDraft,
+      periods: state.academicPeriodDraft.periods.map((period) => period.id === periodId
+        ? { ...period, [field]: dateControl.value }
+        : period)
+    };
+    clearAcademicPeriodErrorsInPlace();
+    updateAcademicPeriodPreviewInPlace();
+    return true;
+  }
+
+  if (action === 'assignment-date' && state.assignmentForm) {
+    const previousDate = state.assignmentForm.selectedDate;
+    state.assignmentForm.selectedDate = dateControl.value;
+    state.assignmentForm.timeNotice = '';
+    if (dateControl.value) {
+      if (assignmentHasSelectedIndividualizedTimes()) {
+        state.assignmentForm.batchConfirmPreviousDate = previousDate;
+        state.assignmentForm.batchConfirmMode = 'date';
+      } else {
+        state.assignmentForm.batchConfirmPreviousDate = null;
+        applyAssignmentBatchMode('date');
+      }
+    }
+    finishDateControlRender(renderMode);
+    if (renderMode === 'immediate' && state.assignmentForm?.batchConfirmMode) {
+      window.requestAnimationFrame(() => app.querySelector('[data-action="confirm-assignment-batch-time"]')?.focus({ preventScroll: true }));
+    }
+    return true;
+  }
+
+  if (action === 'assignment-time-date' && state.assignmentForm?.timeEditor) {
+    state.assignmentForm.timeEditor.dateKey = dateControl.value;
+    state.assignmentForm.timeEditor.error = '';
+    app.querySelector('.assignment-time-editor .exam-time-editor-error')?.remove();
+    return true;
+  }
+
+  if (action === 'exam-date' && state.examForm) {
+    state.examForm.selectedDate = dateControl.value;
+    updateExamScheduleDirty();
+    finishDateControlRender(renderMode);
+    return true;
+  }
+
+  if (action === 'assignment-class-time-date' && state.modal?.mode === 'assignment-class-time') {
+    state.modal.dateKey = dateControl.value;
+    state.modal.error = '';
+    applyAssignmentClassTimeDraft();
+    finishDateControlRender(renderMode);
+    return true;
+  }
+
+  if (action === 'exam-class-time-date' && state.modal?.mode === 'exam-class-time') {
+    state.modal.dateKey = dateControl.value;
+    state.modal.error = '';
+    applyExamClassTimeDraft();
+    finishDateControlRender(renderMode);
+    return true;
+  }
+
+  if (action === 'exam-time-date' && state.examForm?.timeEditor) {
+    state.examForm.timeEditor.dateKey = dateControl.value;
+    state.examForm.timeEditor.error = '';
+    return true;
+  }
+
+  if (action === 'exam-batch-date' && state.examForm?.independentSchedule) {
+    state.examForm.commonDateKey = dateControl.value;
+    const availablePeriodIds = new Set(periodTuplesForDate(dateControl.value).map(([id]) => id));
+    if (!availablePeriodIds.has(state.examForm.commonPeriodId)) state.examForm.commonPeriodId = '';
+    state.examForm.timeNotice = '';
+    if (dateControl.value) applyExamBatchDate();
+    finishDateControlRender(renderMode);
+    return true;
+  }
+
+  return false;
+}
+
+function finalizePendingNativeDateControl(nextActionTarget = null) {
+  const dateControl = pendingNativeDateControl;
+  if (!dateControl) return false;
+  pendingNativeDateControl = null;
+  const action = dateControl.dataset?.action;
+  commitDateControl(dateControl, 'none');
+  if (action === 'assignment-date' && state.assignmentForm?.batchConfirmMode) {
+    render();
+    window.requestAnimationFrame(() => app.querySelector('[data-action="confirm-assignment-batch-time"]')?.focus({ preventScroll: true }));
+    return true;
+  }
+  if (!nextActionTarget && DATE_ACTIONS_REQUIRING_RENDER.has(action)) window.setTimeout(render, 0);
+  return false;
+}
+
+app.addEventListener('pointerdown', (event) => {
+  const actionTarget = event.target.closest?.('[data-action]') || null;
+  pendingDatePointerTarget = actionTarget;
+  window.setTimeout(() => {
+    if (pendingDatePointerTarget === actionTarget) pendingDatePointerTarget = null;
+  }, 0);
+});
+
+app.addEventListener('focusout', (event) => {
+  const dateControl = event.target;
+  if (dateControl !== pendingNativeDateControl) return;
+  const nextActionTarget = pendingDatePointerTarget || event.relatedTarget?.closest?.('[data-action]') || null;
+  const shouldSuppressClick = finalizePendingNativeDateControl(nextActionTarget);
+  if (shouldSuppressClick && nextActionTarget) {
+    suppressDateTriggeredClick = true;
+    window.setTimeout(() => { suppressDateTriggeredClick = false; }, 0);
+  }
+});
+
 app.addEventListener('change', async (event) => {
+  if (NATIVE_DATE_ACTIONS.has(event.target?.dataset?.action)) {
+    if (shouldDeferNativeDateCommit()) {
+      pendingNativeDateControl = event.target;
+      return;
+    }
+    if (commitDateControl(event.target)) return;
+  }
   const backupFileInput = event.target.closest('[data-action="import-backup-file"]');
   if (backupFileInput) {
     const [file] = backupFileInput.files || [];
@@ -5139,20 +5356,6 @@ app.addEventListener('change', async (event) => {
     state.scheduleVersionValidation = null;
     render();
     window.requestAnimationFrame(() => app.querySelector('[data-action="managed-schedule-form-period"]')?.focus({ preventScroll: true }));
-    return;
-  }
-  const scheduleFormDate = event.target.closest('[data-action="managed-schedule-form-date"]');
-  if (scheduleFormDate && state.scheduleVersionForm) {
-    const startDate = scheduleFormDate.value;
-    const canCopy = scheduleVersionsBefore(state.scheduleVersionForm.periodId, startDate).length > 0;
-    state.scheduleVersionForm = {
-      ...state.scheduleVersionForm,
-      startDate,
-      sourceMode: canCopy ? state.scheduleVersionForm.sourceMode : 'blank'
-    };
-    state.scheduleVersionValidation = null;
-    render();
-    window.requestAnimationFrame(() => app.querySelector('[data-action="managed-schedule-form-date"]')?.focus({ preventScroll: true }));
     return;
   }
   const scheduleCellSelect = event.target.closest('[data-action="managed-schedule-cell-select"]');
@@ -5178,20 +5381,6 @@ app.addEventListener('change', async (event) => {
     window.requestAnimationFrame(() => app.querySelector(`select[data-teaching-class-field="${field}"]`)?.focus({ preventScroll: true }));
     return;
   }
-  const academicPeriodDate = event.target.closest('[data-action="academic-period-date"]');
-  if (academicPeriodDate && state.academicPeriodDraft) {
-    const periodId = academicPeriodDate.dataset.periodId;
-    const field = academicPeriodDate.dataset.field;
-    state.academicPeriodDraft = {
-      ...state.academicPeriodDraft,
-      periods: state.academicPeriodDraft.periods.map((period) => period.id === periodId
-        ? { ...period, [field]: academicPeriodDate.value }
-        : period)
-    };
-    clearAcademicPeriodErrorsInPlace();
-    updateAcademicPeriodPreviewInPlace();
-    return;
-  }
   const drawManualSeat = event.target.closest('[data-action="draw-manual-seat"]');
   if (drawManualSeat) {
     state.drawManualSeat = Number(drawManualSeat.value);
@@ -5214,56 +5403,13 @@ app.addEventListener('change', async (event) => {
     state.modal.teachingClassId = select.value;
     return;
   }
-  const dateInput = event.target.closest('[data-action="assignment-date"]');
-  if (dateInput && state.assignmentForm) {
-    const previousDate = state.assignmentForm.selectedDate;
-    state.assignmentForm.selectedDate = dateInput.value;
-    state.assignmentForm.timeNotice = '';
-    if (dateInput.value) {
-      if (assignmentHasSelectedIndividualizedTimes()) {
-        state.assignmentForm.batchConfirmPreviousDate = previousDate;
-        state.assignmentForm.batchConfirmMode = 'date';
-      } else {
-        state.assignmentForm.batchConfirmPreviousDate = null;
-        applyAssignmentBatchMode('date');
-      }
-    }
+  const examBatchPeriod = event.target.closest('[data-action="exam-batch-period"]');
+  if (examBatchPeriod && state.examForm?.independentSchedule) {
+    state.examForm.commonPeriodId = examBatchPeriod.value;
+    state.examForm.timeNotice = '';
+    if (state.examForm.commonDateKey) applyExamBatchDate();
     render();
-    if (state.assignmentForm?.batchConfirmMode) {
-      window.requestAnimationFrame(() => app.querySelector('[data-action="confirm-assignment-batch-time"]')?.focus({ preventScroll: true }));
-    }
-    return;
-  }
-  const assignmentTimeDate = event.target.closest('[data-action="assignment-time-date"]');
-  if (assignmentTimeDate && state.assignmentForm?.timeEditor) {
-    state.assignmentForm.timeEditor.dateKey = assignmentTimeDate.value;
-    state.assignmentForm.timeEditor.error = '';
-    app.querySelector('.assignment-time-editor .exam-time-editor-error')?.remove();
-    return;
-  }
-  const examDateInput = event.target.closest('[data-action="exam-date"]');
-  if (examDateInput && state.examForm) {
-    state.examForm.selectedDate = examDateInput.value;
-    updateExamScheduleDirty();
-    render();
-    return;
-  }
-  const assignmentClassTimeDate = event.target.closest('[data-action="assignment-class-time-date"]');
-  if (assignmentClassTimeDate && state.modal?.mode === 'assignment-class-time') {
-    state.modal.dateKey = assignmentClassTimeDate.value;
-    state.modal.error = '';
-    applyAssignmentClassTimeDraft();
-    render();
-    window.requestAnimationFrame(() => app.querySelector('[data-action="assignment-class-time-date"]')?.focus({ preventScroll: true }));
-    return;
-  }
-  const examClassTimeDate = event.target.closest('[data-action="exam-class-time-date"]');
-  if (examClassTimeDate && state.modal?.mode === 'exam-class-time') {
-    state.modal.dateKey = examClassTimeDate.value;
-    state.modal.error = '';
-    applyExamClassTimeDraft();
-    render();
-    window.requestAnimationFrame(() => app.querySelector('[data-action="exam-class-time-date"]')?.focus({ preventScroll: true }));
+    window.requestAnimationFrame(() => app.querySelector('[data-action="exam-batch-period"]')?.focus({ preventScroll: true }));
     return;
   }
   const examClassTimePeriod = event.target.closest('[data-action="exam-class-time-period"]');
@@ -5273,12 +5419,6 @@ app.addEventListener('change', async (event) => {
     applyExamClassTimeDraft();
     render();
     window.requestAnimationFrame(() => app.querySelector('[data-action="exam-class-time-period"]')?.focus({ preventScroll: true }));
-    return;
-  }
-  const examTimeDate = event.target.closest('[data-action="exam-time-date"]');
-  if (examTimeDate && state.examForm?.timeEditor) {
-    state.examForm.timeEditor.dateKey = examTimeDate.value;
-    state.examForm.timeEditor.error = '';
     return;
   }
   const examTimePeriod = event.target.closest('[data-action="exam-time-period"]');

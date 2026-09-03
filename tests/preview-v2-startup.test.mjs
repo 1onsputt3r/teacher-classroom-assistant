@@ -1,13 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-function installBrowserStubs(search = '') {
+function installBrowserStubs(search = '', options = {}) {
   const values = new Map();
   const handlers = {};
+  const appListeners = {};
   let reloadCount = 0;
   const app = {
     innerHTML: '',
-    addEventListener(type, handler) { handlers[type] = handler; },
+    addEventListener(type, handler) {
+      (appListeners[type] ||= []).push(handler);
+      handlers[type] = handler;
+    },
     querySelector() { return null; },
     querySelectorAll() { return []; }
   };
@@ -30,12 +34,21 @@ function installBrowserStubs(search = '') {
     setInterval() { return 1; },
     setTimeout,
     clearTimeout,
+    matchMedia(query) {
+      return {
+        matches: Boolean(options.coarsePointer && query === '(pointer: coarse)'),
+        media: query,
+        addEventListener() {},
+        removeEventListener() {}
+      };
+    },
     scrollTo() {}
   };
   Object.defineProperty(globalThis, 'navigator', { value: { vibrate: null }, configurable: true });
   globalThis.CSS = { escape: (value) => String(value) };
   Object.defineProperties(values, {
     app: { value: app },
+    appListeners: { value: appListeners },
     handlers: { value: handlers },
     reloadCount: { get() { return reloadCount; } }
   });
@@ -74,6 +87,13 @@ function changeTarget(action, value) {
     dataset: { action },
     closest(selector) { return selector === `[data-action="${action}"]` ? this : null; }
   };
+}
+
+function ensureExamCourseSelected(values, courseKey) {
+  const selectedMarkup = `data-course-key="${courseKey}" aria-pressed="true"`;
+  if (!values.app.innerHTML.includes(selectedMarkup)) {
+    values.handlers.click({ target: actionTarget('toggle-exam-form-course', { courseKey }) });
+  }
 }
 
 async function installClonedTestProfile(label, mutate = () => {}) {
@@ -242,6 +262,131 @@ test('取消日期批次覆蓋會還原空白日期，避免畫面日期與逐�
   assert.doesNotMatch(values.app.innerHTML, /覆蓋個別修改/);
   assert.match(values.app.innerHTML, /data-action="assignment-date"[^>]*value=""/);
   assert.equal(values.get(homeworkKey), beforeRaw);
+});
+
+test('行動裝置日期選擇器關閉前只暫存選擇，不會提早重畫並關閉原生面板', async () => {
+  const values = installBrowserStubs('?data-profile=test', { coarsePointer: true });
+  await import(`../preview-v2/app.js?mobile-date-confirm-${Date.now()}`);
+  const classroom = JSON.parse(values.get([...values.keys()].find((key) => key.includes('homework-v4'))));
+  const mondayKey = nextWeekdayDateKey(classroom.meta.referenceDateKey, 1);
+
+  values.handlers.click({ target: actionTarget('open-assignment-hub') });
+  values.handlers.click({ target: actionTarget('open-assignment-group', { groupKey: 'junior:j8:理化' }) });
+  values.handlers.click({ target: actionTarget('add-common-assignment') });
+  values.handlers.click({ target: actionTarget('set-schedule-mode', { mode: 'date' }) });
+  const input = changeTarget('assignment-date', mondayKey);
+  const beforeChange = values.app.innerHTML;
+
+  await values.handlers.change({ target: input });
+  assert.equal(values.app.innerHTML, beforeChange);
+  assert.match(values.app.innerHTML, /data-action="assignment-date"[^>]*value=""/);
+
+  values.handlers.focusout({ target: input });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.match(values.app.innerHTML, new RegExp(`data-action="assignment-date"[^>]*value="${mondayKey}"`));
+});
+
+test('行動裝置選完作業日期直接按儲存時，仍會先要求確認覆蓋個別時間', async () => {
+  const values = installBrowserStubs('?data-profile=test', { coarsePointer: true });
+  await import(`../preview-v2/app.js?mobile-date-save-confirm-${Date.now()}`);
+  const homeworkKey = [...values.keys()].find((key) => key.includes('homework-v4'));
+  const beforeRaw = values.get(homeworkKey);
+  const classroom = JSON.parse(beforeRaw);
+  const mondayKey = nextWeekdayDateKey(classroom.meta.referenceDateKey, 1);
+  const courseKey = 'teaching-class:test-int-v1-j8-805-chem';
+
+  values.handlers.click({ target: actionTarget('open-assignment-hub') });
+  values.handlers.click({ target: actionTarget('open-assignment-group', { groupKey: 'junior:j8:理化' }) });
+  values.handlers.click({ target: actionTarget('open-common-assignment', { assignmentId: 'test-int-v1-assignment-density' }) });
+  values.handlers.click({ target: actionTarget('edit-common-assignment') });
+  values.handlers.click({ target: actionTarget('open-single-assignment-time', { courseKey }) });
+  values.handlers.click({ target: actionTarget('apply-single-assignment-time', { mode: 'next-week' }) });
+  values.handlers.click({ target: actionTarget('set-schedule-mode', { mode: 'date' }) });
+
+  const dateInput = changeTarget('assignment-date', mondayKey);
+  await values.handlers.change({ target: dateInput });
+  const saveButton = actionTarget('save-assignment');
+  values.appListeners.pointerdown[0]({ target: saveButton });
+  values.handlers.focusout({ target: dateInput, relatedTarget: saveButton });
+  assert.match(values.app.innerHTML, /覆蓋個別修改/);
+
+  let prevented = false;
+  values.handlers.click({ target: saveButton, preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(values.get(homeworkKey), beforeRaw);
+  assert.match(values.app.innerHTML, /覆蓋個別修改/);
+});
+
+test('行動裝置選完考試日期後首次開啟共同節次不會被整頁重畫關閉', async () => {
+  const values = installBrowserStubs('?data-profile=test', { coarsePointer: true });
+  await import(`../preview-v2/app.js?mobile-exam-date-period-${Date.now()}`);
+  const classroom = JSON.parse(values.get([...values.keys()].find((key) => key.includes('homework-v4'))));
+  const mondayKey = nextWeekdayDateKey(classroom.meta.referenceDateKey, 1);
+
+  values.handlers.click({ target: actionTarget('open-exam-hub') });
+  values.handlers.click({ target: actionTarget('open-exam-group', { groupKey: 'junior:j8:理化' }) });
+  values.handlers.click({ target: actionTarget('add-common-exam') });
+  ensureExamCourseSelected(values, 'teaching-class:test-int-v1-j8-805-chem');
+  ensureExamCourseSelected(values, 'teaching-class:test-int-v1-j8-806-chem');
+  values.handlers.click({ target: actionTarget('open-exam-common-time') });
+
+  const dateInput = changeTarget('exam-batch-date', mondayKey);
+  await values.handlers.change({ target: dateInput });
+  const beforeMovingToPeriod = values.app.innerHTML;
+  const periodSelect = {
+    value: 'p6',
+    dataset: { action: 'exam-batch-period' },
+    closest(selector) {
+      return selector === '[data-action]' || selector === '[data-action="exam-batch-period"]' ? this : null;
+    }
+  };
+  values.appListeners.pointerdown[0]({ target: periodSelect });
+  values.handlers.focusout({ target: dateInput, relatedTarget: periodSelect });
+  assert.equal(values.app.innerHTML, beforeMovingToPeriod);
+
+  await values.handlers.change({ target: periodSelect });
+  const formatted = `${Number(mondayKey.slice(5, 7))}/${Number(mondayKey.slice(8, 10))}`;
+  assert.equal((values.app.innerHTML.match(new RegExp(`${formatted}・第 6 節`, 'g')) || []).length, 2);
+});
+
+test('新增共同考試可選共同日期，節次留空依各班課表，選節次後全班同堂', async () => {
+  const values = installBrowserStubs('?data-profile=test');
+  await import(`../preview-v2/app.js?exam-batch-date-${Date.now()}`);
+  const classroom = JSON.parse(values.get([...values.keys()].find((key) => key.includes('homework-v4'))));
+  const mondayKey = nextWeekdayDateKey(classroom.meta.referenceDateKey, 1);
+  values.handlers.click({ target: actionTarget('open-exam-hub') });
+  values.handlers.click({ target: actionTarget('open-exam-group', { groupKey: 'junior:j8:理化' }) });
+  values.handlers.click({ target: actionTarget('add-common-exam') });
+  ensureExamCourseSelected(values, 'teaching-class:test-int-v1-j8-805-chem');
+  ensureExamCourseSelected(values, 'teaching-class:test-int-v1-j8-806-chem');
+  values.handlers.click({ target: actionTarget('open-exam-common-time') });
+
+  assert.match(values.app.innerHTML, /data-action="exam-batch-date"/);
+  assert.match(values.app.innerHTML, /共同節次（選填）/);
+  assert.match(values.app.innerHTML, /<option value="">依各班當日課表<\/option>/);
+
+  await values.handlers.change({ target: changeTarget('exam-batch-date', mondayKey) });
+  const formatted = `${Number(mondayKey.slice(5, 7))}/${Number(mondayKey.slice(8, 10))}`;
+  assert.match(values.app.innerHTML, new RegExp(`${formatted}・第 1 節`));
+  assert.match(values.app.innerHTML, new RegExp(`${formatted}・第 3 節`));
+
+  await values.handlers.change({ target: changeTarget('exam-batch-period', 'p6') });
+  assert.equal((values.app.innerHTML.match(new RegExp(`${formatted}・第 6 節`, 'g')) || []).length, 2);
+});
+
+test('共同作業與考試依是否處理分區顯示', async () => {
+  const values = installBrowserStubs('?data-profile=test');
+  await import(`../preview-v2/app.js?common-record-sections-${Date.now()}`);
+
+  values.handlers.click({ target: actionTarget('open-assignment-hub') });
+  values.handlers.click({ target: actionTarget('open-assignment-group', { groupKey: 'junior:j8:理化' }) });
+  assert.match(values.app.innerHTML, />未檢查<\/h2>/);
+  assert.match(values.app.innerHTML, />已檢查<\/h2>/);
+
+  values.handlers.click({ target: actionTarget('open-exam-hub') });
+  values.handlers.click({ target: actionTarget('open-exam-group', { groupKey: 'junior:j8:理化' }) });
+  assert.match(values.app.innerHTML, />未考試<\/h2>/);
+  assert.match(values.app.innerHTML, />已考試<\/h2>/);
 });
 
 test('節次時間入口位於課表管理主頁，修改單一課表時不再出現', async () => {
