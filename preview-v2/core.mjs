@@ -2302,6 +2302,147 @@ export function buildCommonExamView(exams = {}, catalog = COURSE_CATALOG, availa
     || left.subject.localeCompare(right.subject, 'zh-Hant'));
 }
 
+function classFirstCourseIdentity(course, group, courseKey, catalog) {
+  const system = String(course?.system || group.system || 'unknown');
+  const grade = String(course?.grade || group.grade || 'unknown');
+  const gradeDefinition = catalog[system]?.grades?.[grade];
+  const gradeLabel = gradeDefinition?.label
+    || (group.grade === grade && group.gradeLabel !== '未分類' ? group.gradeLabel : '')
+    || (grade === 'unknown' ? '未分類年級' : grade);
+  const suppliedLabel = String(course?.classLabel || '').normalize('NFKC').trim();
+  let className = normalizeTeachingClassName(course?.className);
+  if (!className && suppliedLabel) {
+    className = normalizeTeachingClassName(suppliedLabel);
+    if (gradeDefinition && className.startsWith(gradeDefinition.label)) {
+      className = normalizeTeachingClassName(className.slice(gradeDefinition.label.length));
+    } else if (system === 'junior' && /^j\d+$/.test(grade)
+      && new RegExp(`^${grade.slice(1)}\\d{2}$`).test(className)) {
+      className = normalizeTeachingClassName(className.slice(grade.length - 1));
+    }
+  }
+  const classKey = className
+    ? physicalClassKey({ system, grade, className })
+    : JSON.stringify([system, grade, 'unknown-course', courseKey]);
+  return {
+    classKey,
+    className,
+    classLabel: suppliedLabel || teachingClassDisplayLabel({ system, grade, className }, catalog) || courseKey || '未命名班級',
+    system,
+    grade,
+    gradeLabel
+  };
+}
+
+function compareClassFirstRecords(left, right) {
+  if (left.processed !== right.processed) return left.processed ? -1 : 1;
+  const timeOrder = left.processed
+    ? Number(right.pendingCount > 0) - Number(left.pendingCount > 0)
+      || String(right.latestProcessedDateKey || right.due?.dateKey || '').localeCompare(String(left.latestProcessedDateKey || left.due?.dateKey || ''))
+      || Number(right.due?.period || 0) - Number(left.due?.period || 0)
+    : String(left.due?.dateKey || '9999-12-31').localeCompare(String(right.due?.dateKey || '9999-12-31'))
+      || Number(left.due?.period || 99) - Number(right.due?.period || 99);
+  return timeOrder
+    || left.subject.localeCompare(right.subject, 'zh-Hant')
+    || left.title.localeCompare(right.title, 'zh-Hant')
+    || left.recordId.localeCompare(right.recordId)
+    || left.courseKey.localeCompare(right.courseKey);
+}
+
+// Reorganize common records for class-first follow-up without changing shared records or targets.
+export function buildClassFirstRecordView(groups = [], kind = 'assignment', catalog = COURSE_CATALOG) {
+  const isExam = kind === 'exam';
+  const collectionName = isExam ? 'exams' : 'assignments';
+  const recordIdField = isExam ? 'examId' : 'assignmentId';
+  const pendingField = isExam ? 'pendingMakeupCount' : 'pendingSubmissionCount';
+  const gradeMap = new Map();
+  const systemOrder = new Map(Object.keys(catalog).map((system, index) => [system, index]));
+  const gradeOrder = new Map();
+  for (const [system, definition] of Object.entries(catalog)) {
+    Object.keys(definition.grades || {}).forEach((grade, index) => gradeOrder.set(`${system}:${grade}`, index));
+  }
+
+  function ensureClass(course, group, courseKey, available = false) {
+    const identity = classFirstCourseIdentity(course, group, courseKey, catalog);
+    const gradeKey = JSON.stringify([identity.system, identity.grade]);
+    if (!gradeMap.has(gradeKey)) {
+      const systemLabel = catalog[identity.system]?.label || (identity.system === 'unknown' ? '未分類學制' : identity.system);
+      gradeMap.set(gradeKey, {
+        gradeKey,
+        system: identity.system,
+        grade: identity.grade,
+        gradeLabel: identity.gradeLabel,
+        label: `${systemLabel}・${identity.gradeLabel}`,
+        classMap: new Map()
+      });
+    }
+    const grade = gradeMap.get(gradeKey);
+    if (!grade.classMap.has(identity.classKey)) {
+      grade.classMap.set(identity.classKey, {
+        ...identity,
+        subjectSet: new Set(),
+        courseKeySet: new Set(),
+        availableCourseMap: new Map(),
+        recordMap: new Map()
+      });
+    }
+    const entry = grade.classMap.get(identity.classKey);
+    entry.subjectSet.add(normalizeTeachingSubject(course?.subject || group.subject) || '未指定科目');
+    entry.courseKeySet.add(courseKey);
+    if (available) entry.availableCourseMap.set(courseKey, { ...course });
+    return entry;
+  }
+
+  for (const group of Array.isArray(groups) ? groups : []) {
+    for (const course of group.availableCourses || []) {
+      if (course && typeof course === 'object') ensureClass(course, group, courseDataKey(course), true);
+    }
+    for (const record of group[collectionName] || []) {
+      for (const target of record.classes || []) {
+        const courseKey = String(target.courseKey || '');
+        const entry = ensureClass(target.course, group, courseKey);
+        const recordId = String(record[recordIdField] || target[recordIdField] || '');
+        const pendingCount = Number(target[pendingField]) || 0;
+        const subject = normalizeTeachingSubject(target.course?.subject || group.subject) || '未指定科目';
+        entry.recordMap.set(JSON.stringify([recordId, courseKey]), {
+          ...target,
+          recordId,
+          groupKey: group.groupKey,
+          courseKey,
+          course: target.course ? { ...target.course } : null,
+          subject,
+          title: String(record.title || ''),
+          isDemo: Boolean(record.isDemo),
+          due: target.due ? { ...target.due } : null,
+          processed: Boolean(target.processed),
+          latestProcessedDateKey: String(target.latestProcessedDateKey || ''),
+          pendingCount,
+          targetStatus: target.targetStatus || 'active'
+        });
+      }
+    }
+  }
+
+  return [...gradeMap.values()].map(({ classMap, ...grade }) => ({
+    ...grade,
+    classes: [...classMap.values()].map(({ subjectSet, courseKeySet, availableCourseMap, recordMap, ...entry }) => {
+      const records = [...recordMap.values()].sort(compareClassFirstRecords);
+      return {
+        ...entry,
+        subjects: [...subjectSet].sort((left, right) => left.localeCompare(right, 'zh-Hant')),
+        availableCourses: [...availableCourseMap.values()],
+        courseKeys: [...courseKeySet].sort(),
+        records,
+        recordCount: records.length,
+        pendingCount: records.reduce((sum, record) => sum + record.pendingCount, 0)
+      };
+    }).sort((left, right) => compareTeachingClassNames(left.className, right.className)
+      || left.classKey.localeCompare(right.classKey))
+  })).sort((left, right) => (systemOrder.get(left.system) ?? 999) - (systemOrder.get(right.system) ?? 999)
+    || left.system.localeCompare(right.system, 'zh-Hant')
+    || (gradeOrder.get(`${left.system}:${left.grade}`) ?? 999) - (gradeOrder.get(`${right.system}:${right.grade}`) ?? 999)
+    || left.grade.localeCompare(right.grade, 'zh-Hant', { numeric: true }));
+}
+
 export function examClassDetail(exams = {}, examId, courseKey) {
   const exam = exams?.[examId];
   const target = exam?.targets?.[courseKey];

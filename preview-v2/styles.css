@@ -790,6 +790,27 @@ body:has(.draw-sheet-backdrop) { overflow: hidden; }
 .common-page-hero > p:last-child { max-width: 530px; margin: 10px 0 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
 .exam-hub-list { display: grid; gap: 9px; }
 .common-record-sections { display: grid; gap: 18px; }
+.record-grade-list { display: grid; gap: 18px; }
+.record-grade-section { min-width: 0; }
+.record-grade-section h2 { margin: 0 0 9px; }
+.record-grade-toggle { width: 100%; min-height: 48px; padding: 6px 3px; display: flex; align-items: center; gap: 10px; border: 0; background: transparent; color: var(--ink); font: inherit; text-align: left; }
+.record-grade-toggle > span:first-child { flex: 1; font-size: 18px; font-weight: 850; }
+.record-grade-toggle small { color: var(--muted); font-size: 14px; font-weight: 600; }
+.record-grade-toggle > span:last-child { width: 28px; text-align: center; }
+.record-class-grid { display: grid; gap: 9px; }
+.record-class-grid[hidden] { display: none; }
+.record-class-card, .record-create-choice { grid-template-columns: minmax(0, 1fr) auto; min-height: 76px; }
+.record-class-card .exam-hub-card-copy strong { font-size: 18px; }
+.record-class-card .exam-hub-card-copy small, .class-record-card .exam-hub-card-copy small { font-size: 14px; }
+.class-record-card .exam-hub-card-copy strong, .record-create-choice .exam-hub-card-copy strong { font-size: 17px; }
+.record-class-card .exam-hub-card-meta em, .class-record-card .exam-hub-card-meta em { padding: 6px 8px; font-size: 14px; }
+.record-create-picker > p { margin: 12px 0 16px; color: var(--muted); font-size: 16px; }
+.record-create-picker .modal-heading h2 { font-size: 24px; }
+.record-shared-link { width: 100%; min-height: 48px; margin-top: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: transparent; color: var(--muted); font-size: 14px; }
+@media (max-width: 359px) {
+  .record-class-card, .class-record-card { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .record-class-card .exam-hub-card-meta, .class-record-card .exam-hub-card-meta { justify-content: space-between; }
+}
 .common-record-section { min-width: 0; }
 .common-record-section-heading { min-height: 32px; margin: 0 2px 7px; display: flex; align-items: center; gap: 8px; }
 .common-record-section-heading h2 { margin: 0; font-size: 16px; }

@@ -14,6 +14,7 @@ import {
   assignmentEditSharingNotice,
   buildCommonAssignmentView,
   buildCommonExamView,
+  buildClassFirstRecordView,
   bottomNavigationActiveTab,
   calendarMonthDays,
   classroomReminderMonthlyCounts,
@@ -100,7 +101,7 @@ import {
   validateManagedScheduleVersionDraft,
   validateTeachingClassBatchDraft,
   validateTeachingClassDraft
-} from './core.mjs?v=20260903-workflow-fixes-1';
+} from './core.mjs?v=20260907-class-first-1';
 
 const app = document.querySelector('#app');
 const TEST_DATA_PROFILE = 'integration-v1';
@@ -454,6 +455,7 @@ const state = {
   activeAssignment: null,
   assignmentForm: null,
   assignmentHub: { groupKey: null, assignmentId: null, courseKey: null },
+  recordHubCollapsedGrades: { assignment: [], exam: [] },
   assignmentHubReturnPage: 'today',
   submissionCompleteTarget: null,
   assignmentHubCancelTarget: null,
@@ -1179,6 +1181,107 @@ function commonExamGroups() {
   return buildCommonExamView(homeworkRecords.exams, COURSE_CATALOG, availableCourses);
 }
 
+function commonRecordHubContext(kind) {
+  const groups = kind === 'assignment' ? commonAssignmentGroups() : commonExamGroups();
+  const grades = buildClassFirstRecordView(groups, kind);
+  const hub = state[`${kind}Hub`];
+  const idField = `${kind}Id`;
+  const collection = kind === 'assignment' ? 'assignments' : 'exams';
+  const selectedClass = grades.flatMap((grade) => grade.classes).find((item) => item.classKey === hub.classKey) || null;
+  if (hub.classKey && !selectedClass) {
+    state[`${kind}Hub`] = { groupKey: null, [idField]: null, courseKey: null };
+    return { groups, grades, selectedClass: null, group: null, [kind]: null, detail: null };
+  }
+  const group = groups.find((item) => item.groupKey === hub.groupKey) || null;
+  const record = group?.[collection].find((item) => item[idField] === hub[idField]) || null;
+  if (hub[idField] && !record) {
+    state[`${kind}Hub`] = { classKey: hub.classKey, groupKey: null, [idField]: null, courseKey: null };
+    return { groups, grades, selectedClass, group: null, [kind]: null, detail: null };
+  }
+  const getDetail = kind === 'assignment' ? assignmentClassDetail : examClassDetail;
+  const detail = record && hub.courseKey
+    ? getDetail(homeworkRecords[collection], record[idField], hub.courseKey) : null;
+  if (hub.courseKey && !detail) hub.courseKey = null;
+  return { groups, grades, selectedClass, group, [kind]: record, detail };
+}
+
+function renderRecordClassDirectory(grades, kind) {
+  const noun = kind === 'assignment' ? '作業' : '考試';
+  const followup = kind === 'assignment' ? '待補交' : '待補考';
+  const theme = kind === 'assignment' ? 'homework-hub-card' : '';
+  const collapsed = state.recordHubCollapsedGrades[kind];
+  const sections = grades.map((grade, index) => {
+    const expanded = !collapsed.includes(grade.gradeKey);
+    const panelId = `${kind}-grade-classes-${index}`;
+    return `<section class="record-grade-section">
+      <h2><button type="button" class="record-grade-toggle" data-action="toggle-record-grade" data-kind="${kind}" data-grade-key="${escapeHtml(grade.gradeKey)}" aria-expanded="${expanded}" aria-controls="${panelId}"><span>${escapeHtml(grade.label)}</span><small>${grade.classes.length} 班</small><span aria-hidden="true">${expanded ? '⌃' : '⌄'}</span></button></h2>
+      <div id="${panelId}" class="record-class-grid" ${expanded ? '' : 'hidden'}>${grade.classes.map((item) => `<button type="button" class="exam-hub-card record-class-card ${theme}" data-action="open-record-class" data-kind="${kind}" data-class-key="${escapeHtml(item.classKey)}"><span class="exam-hub-card-copy"><strong>${escapeHtml(item.classLabel)}</strong><small>${escapeHtml(item.subjects.join('・'))}</small></span><span class="exam-hub-card-meta">${item.pendingCount ? `<em>${followup} ${item.pendingCount} 筆</em>` : `<em class="quiet">${item.recordCount} 份${noun}</em>`}<i aria-hidden="true">›</i></span></button>`).join('')}</div>
+    </section>`;
+  }).join('');
+  return `<div class="record-grade-list">${sections || '<p class="common-empty">目前沒有授課班級，請先到設定新增。</p>'}</div>
+    <button type="button" class="common-add-button ${kind === 'assignment' ? 'homework-add-button' : ''}" data-action="add-common-${kind}">＋ 新增${noun}</button>`;
+}
+
+function renderClassRecordList(selectedClass, kind) {
+  const noun = kind === 'assignment' ? '作業' : '考試';
+  const completedLabel = kind === 'assignment' ? '已檢查' : '已考試';
+  const pendingLabel = kind === 'assignment' ? '未檢查' : '未考試';
+  const followup = kind === 'assignment' ? '待補交' : '待補考';
+  const section = (processed, title) => {
+    const records = selectedClass.records.filter((record) => record.processed === processed);
+    const id = `${kind}-class-section-${processed ? 'checked' : 'pending'}`;
+    return `<section class="common-record-section" aria-labelledby="${id}"><div class="common-record-section-heading"><h2 id="${id}">${title}</h2><span>${records.length}</span></div>${records.length ? `<div class="exam-hub-list">${records.map((record) => {
+      const status = record.pendingCount ? `${followup} ${record.pendingCount} 人` : record.targetStatus === 'cancelled' ? '已取消安排' : processed ? completedLabel : pendingLabel;
+      const date = record.due ? `${formatDate(record.due.dateKey)}・第 ${record.due.period} 節` : '尚未設定時間';
+      return `<button type="button" class="exam-hub-card exam-definition-card class-record-card ${kind === 'assignment' ? 'homework-hub-card' : ''}" data-action="open-class-record" data-kind="${kind}" data-record-id="${escapeHtml(record.recordId)}" data-group-key="${escapeHtml(record.groupKey)}" data-course-key="${escapeHtml(record.courseKey)}"><span class="exam-hub-card-copy"><strong>${escapeHtml(record.title)}</strong><small>${escapeHtml(record.subject)}・${date}</small></span><span class="exam-hub-card-meta"><em class="${record.pendingCount ? '' : 'quiet'}">${status}</em><i aria-hidden="true">›</i></span></button>`;
+    }).join('')}</div>` : `<p class="common-section-empty">目前沒有${title}的${noun}。</p>`}</section>`;
+  };
+  return `<div class="common-record-sections" aria-label="${escapeHtml(selectedClass.classLabel)}的${noun}">${section(true, completedLabel)}${section(false, pendingLabel)}</div>
+    <button type="button" class="common-add-button ${kind === 'assignment' ? 'homework-add-button' : ''}" data-action="add-common-${kind}">＋ 新增${noun}</button>`;
+}
+
+function openCommonRecordForm(kind, groupKey) {
+  const { groups, selectedClass } = commonRecordHubContext(kind);
+  const group = groups.find((item) => item.groupKey === groupKey);
+  if (!group?.availableCourses.length) return;
+  const classCourses = group.availableCourses.filter((course) => selectedClass?.courseKeys.includes(courseDataKey(course)));
+  const session = commonHubSchedulingSession(classCourses.length ? { ...group, availableCourses: classCourses } : group);
+  if (!session) return;
+  state.modal = null;
+  const openForm = kind === 'assignment' ? openAssignmentForm : openExamForm;
+  openForm(null, { session, returnPage: `${kind}-hub`, availableCourses: group.availableCourses, showPeers: true });
+  window.scrollTo({ top: 0, behavior: 'auto' });
+}
+
+function openCommonRecordCreatePicker(kind) {
+  const { groups, group, selectedClass } = commonRecordHubContext(kind);
+  const availableGroups = groups.filter((item) => item.availableCourses.length && (!selectedClass || item.availableCourses.some((course) => selectedClass.courseKeys.includes(courseDataKey(course)))));
+  if (selectedClass && availableGroups.length === 1) return openCommonRecordForm(kind, availableGroups[0].groupKey);
+  if (!selectedClass && group?.availableCourses.length) return openCommonRecordForm(kind, group.groupKey);
+  state.modal = { mode: 'common-record-create', kind };
+  render();
+  window.requestAnimationFrame(() => app.querySelector('[data-action="choose-record-create-group"]')?.focus({ preventScroll: true }));
+}
+
+function renderCommonRecordCreatePicker() {
+  const kind = state.modal.kind;
+  const noun = kind === 'assignment' ? '作業' : '考試';
+  const { groups, selectedClass } = commonRecordHubContext(kind);
+  const availableGroups = groups.filter((group) => group.availableCourses.length && (!selectedClass || group.availableCourses.some((course) => selectedClass.courseKeys.includes(courseDataKey(course)))));
+  return `<div class="modal-backdrop" data-action="close-modal"><section class="modal-card record-create-picker" role="dialog" aria-modal="true" aria-labelledby="record-create-title" data-modal-card><div class="modal-heading"><h2 id="record-create-title">新增${noun}</h2><button type="button" class="icon-button" data-action="close-modal" aria-label="關閉">×</button></div><p>${selectedClass ? `${escapeHtml(selectedClass.classLabel)}・選擇科目` : '選擇年級與科目'}</p><div class="exam-hub-list">${availableGroups.map((group) => `<button type="button" class="exam-hub-card record-create-choice ${kind === 'assignment' ? 'homework-hub-card' : ''}" data-action="choose-record-create-group" data-kind="${kind}" data-group-key="${escapeHtml(group.groupKey)}"><span class="exam-hub-card-copy"><strong>${escapeHtml(group.label)}</strong><small>${escapeHtml(COURSE_CATALOG[group.system]?.label || '')}</small></span><span aria-hidden="true">›</span></button>`).join('') || '<p class="common-empty">請先到設定新增授課班級，再安排作業或考試。</p>'}</div></section></div>`;
+}
+
+function returnToSavedClassRecord(kind, recordId, preferredCourseKey) {
+  const hub = state[`${kind}Hub`];
+  if (hub[`${kind}Id`]) return;
+  const { grades, selectedClass } = commonRecordHubContext(kind);
+  const matches = grades.flatMap((grade) => grade.classes).flatMap((item) => item.records.filter((record) => record.recordId === recordId).map((record) => ({ item, record })));
+  const match = matches.find(({ item, record }) => item.classKey === selectedClass?.classKey && record.courseKey === preferredCourseKey)
+    || matches.find(({ item }) => item.classKey === selectedClass?.classKey)
+    || matches.find(({ record }) => record.courseKey === preferredCourseKey) || matches[0];
+  if (match) state[`${kind}Hub`] = { classKey: match.item.classKey, groupKey: match.record.groupKey, [`${kind}Id`]: recordId, courseKey: match.record.courseKey };
+}
+
 function commonHubSchedulingSession(group, fallbackSession = null) {
   const courses = Array.isArray(group?.availableCourses) ? group.availableCourses : [];
   if (!courses.length) return fallbackSession;
@@ -1217,16 +1320,7 @@ function renderBottomNavigation(active = bottomNavigationActiveTab(state.page)) 
 }
 
 function assignmentHubContext() {
-  const groups = commonAssignmentGroups();
-  let group = groups.find((item) => item.groupKey === state.assignmentHub.groupKey) || null;
-  if (state.assignmentHub.groupKey && !group) state.assignmentHub = { groupKey: null, assignmentId: null, courseKey: null };
-  if (!group) return { groups, group: null, assignment: null, detail: null };
-  let assignment = group.assignments.find((item) => item.assignmentId === state.assignmentHub.assignmentId) || null;
-  if (state.assignmentHub.assignmentId && !assignment) state.assignmentHub = { groupKey: group.groupKey, assignmentId: null, courseKey: null };
-  if (!assignment) return { groups, group, assignment: null, detail: null };
-  const detail = state.assignmentHub.courseKey ? assignmentClassDetail(homeworkRecords.assignments, assignment.assignmentId, state.assignmentHub.courseKey) : null;
-  if (state.assignmentHub.courseKey && !detail) state.assignmentHub = { groupKey: group.groupKey, assignmentId: assignment.assignmentId, courseKey: null };
-  return { groups, group, assignment, detail };
+  return commonRecordHubContext('assignment');
 }
 
 function commonAssignmentClassStatus(item) {
@@ -1388,20 +1482,26 @@ function renderCommonAssignmentDetail(group, assignment, detail) {
 }
 
 function renderAssignmentHub() {
-  const { groups, group, assignment, detail } = assignmentHubContext();
+  const { grades, selectedClass, group, assignment, detail } = assignmentHubContext();
   let title = '作業';
   let subtitle = '共通管理';
-  let headline = '選擇年級與科目';
+  let headline = '選擇班級';
   let eyebrow = '共通作業';
-  let body = renderAssignmentGroupCards(groups);
-  if (group) {
+  let body = renderRecordClassDirectory(grades, 'assignment');
+  if (selectedClass) {
+    title = selectedClass.classLabel;
+    subtitle = `${selectedClass.gradeLabel}・作業`;
+    headline = `${selectedClass.classLabel}的作業`;
+    eyebrow = `${selectedClass.recordCount} 份作業`;
+    body = renderClassRecordList(selectedClass, 'assignment');
+  } else if (group) {
     title = group.label;
     subtitle = '作業分類';
     headline = '選擇作業';
     eyebrow = `${group.assignmentCount} 份作業`;
     body = renderCommonAssignmentList(group);
   }
-  if (assignment) {
+  if (assignment && (!selectedClass || state.assignmentHub.sharedOverview)) {
     title = assignment.title;
     subtitle = group.label;
     headline = '選擇班級與時間';
@@ -1412,9 +1512,12 @@ function renderAssignmentHub() {
     title = detail.course?.classLabel || detail.courseKey;
     subtitle = `${assignment.title}・${group.label}`;
     body = renderCommonAssignmentDetail(group, assignment, detail);
+    if (selectedClass && !state.assignmentHub.sharedOverview) body += '<button type="button" class="record-shared-link" data-action="open-record-shared-overview" data-kind="assignment">其他班級與共用設定 ›</button>';
   }
   const backLabel = detail
-    ? '返回班級與時間'
+    ? selectedClass && !state.assignmentHub.sharedOverview ? '返回本班作業' : '返回班級與時間'
+    : state.assignmentHub.sharedOverview ? '返回班級作業資訊'
+    : selectedClass ? state.assignmentHubReturnPage === 'course' ? '返回本堂課' : '返回年級與班級'
     : assignment
       ? '返回作業清單'
       : group
@@ -1422,21 +1525,12 @@ function renderAssignmentHub() {
         : state.assignmentHubReturnPage === 'course' ? '返回本堂課' : '返回今日課表';
   return `${pageHeader(title, subtitle, 'back-assignment-hub', null, '', backLabel)}
     <main id="main" class="content common-exam-content common-homework-content records-page-content" tabindex="-1">
-      ${detail ? body : `<section class="common-page-hero"><p class="eyebrow">${escapeHtml(eyebrow)}</p><h1>${escapeHtml(headline)}</h1>${!group ? '<p>依照年級與科目整理所有作業，再逐層查看各班時間、檢查與補交紀錄。</p>' : ''}</section>${body}`}
+      ${detail ? body : `<section class="common-page-hero"><p class="eyebrow">${escapeHtml(eyebrow)}</p><h1>${escapeHtml(headline)}</h1>${!group && !selectedClass ? '<p>先選班級，再找到要補交的作業。</p>' : ''}</section>${body}`}
     </main>`;
 }
 
 function examHubContext() {
-  const groups = commonExamGroups();
-  let group = groups.find((item) => item.groupKey === state.examHub.groupKey) || null;
-  if (state.examHub.groupKey && !group) state.examHub = { groupKey: null, examId: null, courseKey: null };
-  if (!group) return { groups, group: null, exam: null, detail: null };
-  let exam = group.exams.find((item) => item.examId === state.examHub.examId) || null;
-  if (state.examHub.examId && !exam) state.examHub = { groupKey: group.groupKey, examId: null, courseKey: null };
-  if (!exam) return { groups, group, exam: null, detail: null };
-  const detail = state.examHub.courseKey ? examClassDetail(homeworkRecords.exams, exam.examId, state.examHub.courseKey) : null;
-  if (state.examHub.courseKey && !detail) state.examHub = { groupKey: group.groupKey, examId: exam.examId, courseKey: null };
-  return { groups, group, exam, detail };
+  return commonRecordHubContext('exam');
 }
 
 function examDateRange(exam) {
@@ -1623,20 +1717,26 @@ function renderCommonExamDetail(group, exam, detail) {
 }
 
 function renderExamHub() {
-  const { groups, group, exam, detail } = examHubContext();
+  const { grades, selectedClass, group, exam, detail } = examHubContext();
   let title = '考試';
   let subtitle = '共通管理';
-  let headline = '選擇年級與科目';
+  let headline = '選擇班級';
   let eyebrow = '共通考試';
-  let body = renderExamGroupCards(groups);
-  if (group) {
+  let body = renderRecordClassDirectory(grades, 'exam');
+  if (selectedClass) {
+    title = selectedClass.classLabel;
+    subtitle = `${selectedClass.gradeLabel}・考試`;
+    headline = `${selectedClass.classLabel}的考試`;
+    eyebrow = `${selectedClass.recordCount} 份考試`;
+    body = renderClassRecordList(selectedClass, 'exam');
+  } else if (group) {
     title = group.label;
     subtitle = '考試分類';
     headline = '選擇考試';
     eyebrow = `${group.examCount} 份考試`;
     body = renderCommonExamList(group);
   }
-  if (exam) {
+  if (exam && (!selectedClass || state.examHub.sharedOverview)) {
     title = exam.title;
     subtitle = group.label;
     headline = '選擇班級與時間';
@@ -1647,9 +1747,12 @@ function renderExamHub() {
     title = detail.course?.classLabel || detail.courseKey;
     subtitle = `${exam.title}・${group.label}`;
     body = renderCommonExamDetail(group, exam, detail);
+    if (selectedClass && !state.examHub.sharedOverview) body += '<button type="button" class="record-shared-link" data-action="open-record-shared-overview" data-kind="exam">其他班級與共用設定 ›</button>';
   }
   const backLabel = detail
-    ? '返回班級與時間'
+    ? selectedClass && !state.examHub.sharedOverview ? '返回本班考試' : '返回班級與時間'
+    : state.examHub.sharedOverview ? '返回班級考試資訊'
+    : selectedClass ? state.examHubReturnPage === 'course' ? '返回本堂課' : '返回年級與班級'
     : exam
       ? '返回考試清單'
       : group
@@ -1657,12 +1760,13 @@ function renderExamHub() {
         : state.examHubReturnPage === 'course' ? '返回本堂課' : '返回今日課表';
   return `${pageHeader(title, subtitle, 'back-exam-hub', null, '', backLabel)}
     <main id="main" class="content common-exam-content records-page-content" tabindex="-1">
-      ${detail ? body : `<section class="common-page-hero"><p class="eyebrow">${escapeHtml(eyebrow)}</p><h1>${escapeHtml(headline)}</h1>${!group ? '<p>依照年級與科目整理所有考試，再逐層查看各班時間、點名與補考紀錄。</p>' : ''}</section>${body}`}
+      ${detail ? body : `<section class="common-page-hero"><p class="eyebrow">${escapeHtml(eyebrow)}</p><h1>${escapeHtml(headline)}</h1>${!group && !selectedClass ? '<p>先選班級，再找到要補考的考試。</p>' : ''}</section>${body}`}
     </main>`;
 }
 
 function renderModal() {
   if (!state.modal) return '';
+  if (state.modal.mode === 'common-record-create') return renderCommonRecordCreatePicker();
   if (state.modal.mode === 'install-help') {
     return `<div class="modal-backdrop" data-action="close-modal">
       <section class="modal-card confirm-card install-help-card" role="dialog" aria-modal="true" aria-labelledby="install-help-title" data-modal-card>
@@ -2743,7 +2847,7 @@ function saveAssignmentForm() {
   state.assignmentForm = null;
   state.page = returnPage === 'assignment-hub' ? 'assignment-hub' : 'course';
   if (state.page === 'course') state.accordion = 'assignment';
-  if (state.page === 'assignment-hub' && !state.assignmentHub.assignmentId) state.assignmentHub.assignmentId = id;
+  if (state.page === 'assignment-hub') returnToSavedClassRecord('assignment', id, sessionCourseKey(session));
   showTimedToast(form.assignmentId ? '已更新作業' : '已建立作業');
 }
 
@@ -2986,7 +3090,7 @@ function saveExamForm() {
   state.examForm = null;
   state.page = returnPage === 'exam-hub' ? 'exam-hub' : 'course';
   if (state.page === 'course') state.accordion = 'exam';
-  if (state.page === 'exam-hub' && !state.examHub.examId) state.examHub.examId = id;
+  if (state.page === 'exam-hub') returnToSavedClassRecord('exam', id, sessionCourseKey(session));
   showTimedToast(form.examId ? '已更新考試' : '已建立考試');
 }
 
@@ -3757,6 +3861,43 @@ app.addEventListener('click', (event) => {
   if (target.hasAttribute('data-modal-card')) return;
   const action = target.dataset.action;
 
+  if (action === 'toggle-record-grade') {
+    const { kind, gradeKey } = target.dataset;
+    if (!['assignment', 'exam'].includes(kind)) return;
+    const collapsed = state.recordHubCollapsedGrades[kind];
+    state.recordHubCollapsedGrades[kind] = collapsed.includes(gradeKey) ? collapsed.filter((key) => key !== gradeKey) : [...collapsed, gradeKey];
+    render();
+    window.requestAnimationFrame(() => app.querySelector(`[data-action="toggle-record-grade"][data-kind="${kind}"][data-grade-key="${CSS.escape(gradeKey)}"]`)?.focus({ preventScroll: true }));
+  }
+  if (action === 'open-record-class') {
+    const { kind, classKey } = target.dataset;
+    if (!['assignment', 'exam'].includes(kind)) return;
+    state[`${kind}Hub`] = { classKey, groupKey: null, [`${kind}Id`]: null, courseKey: null };
+    renderAssignmentHubTransition();
+  }
+  if (action === 'open-class-record') {
+    const { kind, recordId, groupKey, courseKey } = target.dataset;
+    if (!['assignment', 'exam'].includes(kind)) return;
+    const { selectedClass } = commonRecordHubContext(kind);
+    if (!selectedClass?.records.some((record) => record.recordId === recordId && record.courseKey === courseKey && record.groupKey === groupKey)) return;
+    state[`${kind}Hub`] = { classKey: selectedClass.classKey, groupKey, [`${kind}Id`]: recordId, courseKey };
+    state.submissionCompleteTarget = null;
+    state.makeupCompleteTarget = null;
+    renderAssignmentHubTransition();
+  }
+  if (action === 'open-record-shared-overview') {
+    const { kind } = target.dataset;
+    if (!['assignment', 'exam'].includes(kind)) return;
+    const hub = state[`${kind}Hub`];
+    state[`${kind}Hub`] = { ...hub, sharedOverview: true, sharedReturnCourseKey: hub.courseKey, courseKey: null };
+    renderAssignmentHubTransition();
+  }
+  if (action === 'choose-record-create-group') {
+    const { kind, groupKey } = target.dataset;
+    if (state.modal?.mode !== 'common-record-create' || state.modal.kind !== kind) return;
+    openCommonRecordForm(kind, groupKey);
+  }
+
   if (action === 'install-app') requestAppInstall();
   if (action === 'open-course') openCourseModal(target.dataset.slot);
   if (action === 'open-calendar') {
@@ -4497,7 +4638,10 @@ app.addEventListener('click', (event) => {
   if (action === 'back-assignment-hub') {
     state.assignmentHubCancelTarget = null;
     state.submissionCompleteTarget = null;
-    if (state.assignmentHub.courseKey) state.assignmentHub = { ...state.assignmentHub, courseKey: null };
+    if (state.assignmentHub.classKey && !state.assignmentHub.sharedOverview && state.assignmentHub.assignmentId) state.assignmentHub = { classKey: state.assignmentHub.classKey, groupKey: null, assignmentId: null, courseKey: null };
+    else if (state.assignmentHub.sharedOverview && !state.assignmentHub.courseKey) state.assignmentHub = { ...state.assignmentHub, sharedOverview: false, courseKey: state.assignmentHub.sharedReturnCourseKey };
+    else if (state.assignmentHub.courseKey) state.assignmentHub = { ...state.assignmentHub, courseKey: null };
+    else if (state.assignmentHub.classKey && state.assignmentHubReturnPage !== 'course') state.assignmentHub = { groupKey: null, assignmentId: null, courseKey: null };
     else if (state.assignmentHub.assignmentId) state.assignmentHub = { ...state.assignmentHub, assignmentId: null, courseKey: null };
     else if (state.assignmentHub.groupKey && state.assignmentHubReturnPage !== 'course') state.assignmentHub = { groupKey: null, assignmentId: null, courseKey: null };
     else {
@@ -4508,9 +4652,10 @@ app.addEventListener('click', (event) => {
     renderAssignmentHubTransition();
   }
   if (action === 'open-course-assignment-hub') {
-    const groupKey = sessionRecordGroupKey();
-    if (!groupKey) return;
-    state.assignmentHub = { groupKey, assignmentId: null, courseKey: null };
+    const courseKey = sessionCourseKey();
+    const selectedClass = buildClassFirstRecordView(commonAssignmentGroups(), 'assignment').flatMap((grade) => grade.classes).find((item) => item.courseKeys.includes(courseKey));
+    if (!selectedClass) return;
+    state.assignmentHub = { classKey: selectedClass.classKey, groupKey: null, assignmentId: null, courseKey: null };
     state.assignmentHubReturnPage = 'course';
     state.assignmentHubCancelTarget = null;
     state.submissionCompleteTarget = null;
@@ -4537,17 +4682,7 @@ app.addEventListener('click', (event) => {
     renderAssignmentHubTransition();
   }
   if (action === 'add-common-assignment') {
-    const { group } = assignmentHubContext();
-    const sourceClass = group?.assignments.flatMap((assignment) => assignment.classes.map((item) => ({ assignmentId: assignment.assignmentId, courseKey: item.courseKey }))).find(Boolean);
-    const detail = sourceClass ? assignmentClassDetail(homeworkRecords.assignments, sourceClass.assignmentId, sourceClass.courseKey) : null;
-    const session = commonHubSchedulingSession(group, assignmentTargetSession(detail));
-    if (session) openAssignmentForm(null, {
-      session,
-      returnPage: 'assignment-hub',
-      availableCourses: group?.availableCourses || [],
-      showPeers: true
-    });
-    else showTimedToast('這個分類目前沒有可用的授課班級');
+    openCommonRecordCreatePicker('assignment');
   }
   if (action === 'edit-common-assignment') {
     const { assignment } = assignmentHubContext();
@@ -4682,7 +4817,10 @@ app.addEventListener('click', (event) => {
   if (action === 'back-exam-hub') {
     state.examCancelTarget = null;
     state.makeupCompleteTarget = null;
-    if (state.examHub.courseKey) state.examHub = { ...state.examHub, courseKey: null };
+    if (state.examHub.classKey && !state.examHub.sharedOverview && state.examHub.examId) state.examHub = { classKey: state.examHub.classKey, groupKey: null, examId: null, courseKey: null };
+    else if (state.examHub.sharedOverview && !state.examHub.courseKey) state.examHub = { ...state.examHub, sharedOverview: false, courseKey: state.examHub.sharedReturnCourseKey };
+    else if (state.examHub.courseKey) state.examHub = { ...state.examHub, courseKey: null };
+    else if (state.examHub.classKey && state.examHubReturnPage !== 'course') state.examHub = { groupKey: null, examId: null, courseKey: null };
     else if (state.examHub.examId) state.examHub = { ...state.examHub, examId: null, courseKey: null };
     else if (state.examHub.groupKey && state.examHubReturnPage !== 'course') state.examHub = { groupKey: null, examId: null, courseKey: null };
     else {
@@ -4693,9 +4831,10 @@ app.addEventListener('click', (event) => {
     renderExamHubTransition();
   }
   if (action === 'open-course-exam-hub') {
-    const groupKey = sessionRecordGroupKey();
-    if (!groupKey) return;
-    state.examHub = { groupKey, examId: null, courseKey: null };
+    const courseKey = sessionCourseKey();
+    const selectedClass = buildClassFirstRecordView(commonExamGroups(), 'exam').flatMap((grade) => grade.classes).find((item) => item.courseKeys.includes(courseKey));
+    if (!selectedClass) return;
+    state.examHub = { classKey: selectedClass.classKey, groupKey: null, examId: null, courseKey: null };
     state.examHubReturnPage = 'course';
     state.examCancelTarget = null;
     state.makeupCompleteTarget = null;
@@ -4722,17 +4861,7 @@ app.addEventListener('click', (event) => {
     renderExamHubTransition();
   }
   if (action === 'add-common-exam') {
-    const { group } = examHubContext();
-    const sourceClass = group?.exams.flatMap((exam) => exam.classes.map((item) => ({ examId: exam.examId, courseKey: item.courseKey }))).find(Boolean);
-    const detail = sourceClass ? examClassDetail(homeworkRecords.exams, sourceClass.examId, sourceClass.courseKey) : null;
-    const session = commonHubSchedulingSession(group, examTargetSession(detail));
-    if (session) openExamForm(null, {
-      session,
-      returnPage: 'exam-hub',
-      availableCourses: group?.availableCourses || [],
-      showPeers: true
-    });
-    else showTimedToast('這個分類目前沒有可用的授課班級');
+    openCommonRecordCreatePicker('exam');
   }
   if (action === 'edit-common-exam') {
     const { exam } = examHubContext();

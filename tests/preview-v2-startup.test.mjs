@@ -89,9 +89,9 @@ function changeTarget(action, value) {
   };
 }
 
-function ensureExamCourseSelected(values, courseKey) {
+function ensureExamCourseSelected(values, courseKey, selected = true) {
   const selectedMarkup = `data-course-key="${courseKey}" aria-pressed="true"`;
-  if (!values.app.innerHTML.includes(selectedMarkup)) {
+  if (values.app.innerHTML.includes(selectedMarkup) !== selected) {
     values.handlers.click({ target: actionTarget('toggle-exam-form-course', { courseKey }) });
   }
 }
@@ -118,6 +118,24 @@ function nextWeekdayDateKey(dateKey, weekday) {
   const date = new Date(`${dateKey}T12:00:00`);
   const offset = (weekday - date.getDay() + 7) % 7 || 7;
   return shiftDateKey(dateKey, offset);
+}
+
+function clickAction(values, action, dataset = {}) {
+  values.handlers.click({ target: actionTarget(action, dataset) });
+}
+
+function openHubClass(values, kind, className = '5', system = 'junior', grade = 'j8') {
+  clickAction(values, `open-${kind}-hub`);
+  clickAction(values, 'open-record-class', { kind, classKey: JSON.stringify([system, grade, className]) });
+}
+
+function openClassRecord(values, kind, recordId, courseKey = 'teaching-class:test-int-v1-j8-805-chem', groupKey = 'junior:j8:理化') {
+  clickAction(values, 'open-class-record', { kind, recordId, courseKey, groupKey });
+}
+
+function storedClassroom(values) {
+  const key = [...values.keys()].find((item) => item.includes('homework-v4'));
+  return { key, raw: values.get(key), data: JSON.parse(values.get(key)) };
 }
 
 test('聯動測試資料使用獨立鍵並涵蓋課表、名冊與四類課堂資料', async () => {
@@ -152,36 +170,214 @@ test('聯動測試資料使用獨立鍵並涵蓋課表、名冊與四類課堂�
   assert.match(classroom.meta.referenceDateKey, /^\d{4}-\d{2}-\d{2}$/);
 });
 
-test('空白作業與考試仍由授課班級顯示分類，且可直接開啟新增表單而不寫入資料', async () => {
+test('空白共同頁仍顯示年級與班級，底部新增先選年級科目且取消不寫入資料', async () => {
   const values = await installClonedTestProfile('empty-common-hubs', clearTestClassroomCollections);
   const before = [...values].sort(([left], [right]) => left.localeCompare(right));
 
-  values.handlers.click({ target: actionTarget('open-assignment-hub') });
-  assert.match(values.app.innerHTML, /data-action="open-assignment-group" data-group-key="junior:j8:理化"/);
-  assert.match(values.app.innerHTML, /0 份作業・3 個班級/);
-  assert.doesNotMatch(values.app.innerHTML, /請先從本堂課新增作業/);
-  values.handlers.click({ target: actionTarget('open-assignment-group', { groupKey: 'junior:j8:理化' }) });
-  assert.match(values.app.innerHTML, /這個年級與科目目前還沒有作業/);
-  assert.match(values.app.innerHTML, /data-action="add-common-assignment"/);
-  values.handlers.click({ target: actionTarget('add-common-assignment') });
-  assert.match(values.app.innerHTML, /新增作業/);
-  assert.match(values.app.innerHTML, /data-action="save-assignment"/);
-  assert.equal((values.app.innerHTML.match(/data-action="toggle-form-course"/g) || []).length, 3);
-  assert.doesNotMatch(values.app.innerHTML, /加入其他班級/);
-
-  values.handlers.click({ target: actionTarget('back-assignment-form') });
-  values.handlers.click({ target: actionTarget('open-exam-hub') });
-  assert.match(values.app.innerHTML, /data-action="open-exam-group" data-group-key="junior:j8:理化"/);
-  assert.match(values.app.innerHTML, /0 份考試・3 個班級/);
-  assert.doesNotMatch(values.app.innerHTML, /請先從本堂課新增考試/);
-  values.handlers.click({ target: actionTarget('open-exam-group', { groupKey: 'junior:j8:理化' }) });
-  assert.match(values.app.innerHTML, /這個年級與科目目前還沒有考試/);
-  values.handlers.click({ target: actionTarget('add-common-exam') });
-  assert.match(values.app.innerHTML, /新增考試/);
-  assert.match(values.app.innerHTML, /data-action="save-exam"/);
-  assert.equal((values.app.innerHTML.match(/data-action="toggle-exam-form-course"/g) || []).length, 3);
-  assert.doesNotMatch(values.app.innerHTML, /加入其他班級/);
+  for (const kind of ['assignment', 'exam']) {
+    const noun = kind === 'assignment' ? '作業' : '考試';
+    clickAction(values, `open-${kind}-hub`);
+    assert.match(values.app.innerHTML, /<h1>選擇班級<\/h1>/);
+    assert.equal((values.app.innerHTML.match(/data-action="open-record-class"/g) || []).length, 4);
+    assert.match(values.app.innerHTML, new RegExp(`0 份${noun}`));
+    assert.doesNotMatch(values.app.innerHTML, /請先從本堂課新增|data-action="open-assignment-group"|data-action="open-exam-group"/);
+    assert.ok(values.app.innerHTML.indexOf(`data-action="add-common-${kind}"`) > values.app.innerHTML.lastIndexOf('data-action="open-record-class"'));
+    clickAction(values, `add-common-${kind}`);
+    assert.match(values.app.innerHTML, /role="dialog"/);
+    assert.match(values.app.innerHTML, /選擇年級與科目/);
+    assert.equal((values.app.innerHTML.match(/data-action="choose-record-create-group"/g) || []).length, 3);
+    clickAction(values, 'choose-record-create-group', { kind, groupKey: 'junior:j8:理化' });
+    assert.match(values.app.innerHTML, new RegExp(`data-action="save-${kind}"`));
+    const toggle = kind === 'assignment' ? 'toggle-form-course' : 'toggle-exam-form-course';
+    assert.equal((values.app.innerHTML.match(new RegExp(`data-action="${toggle}"`, 'g')) || []).length, 3);
+    assert.doesNotMatch(values.app.innerHTML, /加入其他班級/);
+    clickAction(values, `back-${kind}-form`);
+    assert.match(values.app.innerHTML, /<h1>選擇班級<\/h1>/);
+    assert.doesNotMatch(values.app.innerHTML, /role="dialog"/);
+  }
   assert.deepEqual([...values].sort(([left], [right]) => left.localeCompare(right)), before);
+});
+
+test('共同頁年級預設展開，可獨立收合並將同一班的多科目合併成一張班級卡', async () => {
+  const values = await installClonedTestProfile('class-directory');
+  const before = storedClassroom(values).raw;
+  clickAction(values, 'open-assignment-hub');
+  assert.equal((values.app.innerHTML.match(/data-action="toggle-record-grade"/g) || []).length, 2);
+  assert.equal((values.app.innerHTML.match(/aria-expanded="true"/g) || []).length, 2);
+  assert.equal((values.app.innerHTML.match(/data-action="open-record-class"/g) || []).length, 4);
+  assert.match(values.app.innerHTML, /物理・物理探究/);
+  clickAction(values, 'toggle-record-grade', { kind: 'assignment', gradeKey: JSON.stringify(['junior', 'j8']) });
+  assert.match(values.app.innerHTML, /aria-expanded="false" aria-controls="assignment-grade-classes-0"/);
+  assert.match(values.app.innerHTML, /id="assignment-grade-classes-0" class="record-class-grid" hidden/);
+  clickAction(values, 'open-exam-hub');
+  assert.match(values.app.innerHTML, /aria-expanded="true" aria-controls="exam-grade-classes-0"/);
+  clickAction(values, 'open-assignment-hub');
+  assert.match(values.app.innerHTML, /aria-expanded="false" aria-controls="assignment-grade-classes-0"/);
+  clickAction(values, 'toggle-record-grade', { kind: 'assignment', gradeKey: JSON.stringify(['junior', 'j8']) });
+  assert.match(values.app.innerHTML, /aria-expanded="true" aria-controls="assignment-grade-classes-0"/);
+  assert.equal(storedClassroom(values).raw, before);
+});
+
+test('班級作業與考試以本班紀錄分區，已處理在上且不受另一班檢查狀態影響', async () => {
+  const values = await installClonedTestProfile('class-record-sections', (stored, suffix) => {
+    const key = `teacher-assistant-preview-v2-homework-v4${suffix}`;
+    const data = JSON.parse(stored.get(key));
+    const courseKey = 'teaching-class:test-int-v1-j8-806-chem';
+    for (const [collection, id, followups] of [['assignments', 'test-int-v1-assignment-density', 'submissions'], ['exams', 'test-int-v1-exam-weekly', 'makeups']]) {
+      const target = data[collection][id].targets[courseKey];
+      target.lastCheck = null;
+      target.checks = [];
+      target[followups] = {};
+    }
+    data.courses[courseKey].pendingHomework = [];
+    data.courses[courseKey].completedHomework = [];
+    stored.set(key, JSON.stringify(data));
+  });
+  for (const [kind, recordId] of [['assignment', 'test-int-v1-assignment-density'], ['exam', 'test-int-v1-exam-weekly']]) {
+    openHubClass(values, kind, '6');
+    const markup = values.app.innerHTML;
+    const checked = markup.indexOf(`id="${kind}-class-section-checked"`);
+    const pending = markup.indexOf(`id="${kind}-class-section-pending"`);
+    const record = markup.indexOf(`data-record-id="${recordId}"`);
+    assert.ok(checked >= 0 && checked < pending && pending < record);
+    assert.doesNotMatch(markup.slice(checked, pending), /data-action="open-class-record"/);
+    openHubClass(values, kind, '5');
+    assert.ok(values.app.innerHTML.indexOf(`data-record-id="${recordId}"`) < values.app.innerHTML.indexOf(`id="${kind}-class-section-pending"`));
+  }
+});
+
+test('班級作業直接進入資訊並完成指定補交，不更動同座號其他作業或其他班', async () => {
+  const values = await installClonedTestProfile('class-submission-isolation');
+  const before = storedClassroom(values);
+  const assignmentId = 'test-int-v1-assignment-density';
+  const courseKey = 'teaching-class:test-int-v1-j8-805-chem';
+  const submission = Object.values(before.data.assignments[assignmentId].targets[courseKey].submissions).find((item) => item.seat === 12);
+  openHubClass(values, 'assignment');
+  openClassRecord(values, 'assignment', assignmentId);
+  assert.match(values.app.innerHTML, /班級作業資訊/);
+  assert.match(values.app.innerHTML, /aria-label="返回本班作業"/);
+  assert.doesNotMatch(values.app.innerHTML, /<h1>選擇班級與時間<\/h1>/);
+  clickAction(values, 'request-complete-common-submission', { assignmentId, courseKey, submissionId: submission.id, seat: '12' });
+  assert.equal(storedClassroom(values).raw, before.raw);
+  clickAction(values, 'confirm-complete-common-submission');
+  const after = storedClassroom(values).data;
+  assert.equal(after.assignments[assignmentId].targets[courseKey].submissions[submission.id].status, 'completed');
+  assert.deepEqual(after.assignments[assignmentId].targets['teaching-class:test-int-v1-j8-806-chem'], before.data.assignments[assignmentId].targets['teaching-class:test-int-v1-j8-806-chem']);
+  assert.deepEqual(after.assignments['test-int-v1-assignment-workbook'], before.data.assignments['test-int-v1-assignment-workbook']);
+  assert.deepEqual(after.exams, before.data.exams);
+  clickAction(values, 'back-assignment-hub');
+  assert.match(values.app.innerHTML, /<h1>805班的作業<\/h1>/);
+});
+
+test('班級考試直接進入資訊，完成補考只更新該班指定學生', async () => {
+  const values = await installClonedTestProfile('class-makeup-isolation', (stored, suffix) => {
+    const key = `teacher-assistant-preview-v2-homework-v4${suffix}`;
+    const data = JSON.parse(stored.get(key));
+    const peer = data.exams['test-int-v1-exam-weekly'].targets['teaching-class:test-int-v1-j8-806-chem'];
+    peer.makeups['15'] = { ...peer.makeups['3'], seat: 15 };
+    stored.set(key, JSON.stringify(data));
+  });
+  const before = storedClassroom(values);
+  const examId = 'test-int-v1-exam-weekly';
+  const courseKey = 'teaching-class:test-int-v1-j8-805-chem';
+  openHubClass(values, 'exam');
+  openClassRecord(values, 'exam', examId);
+  assert.match(values.app.innerHTML, /班級考試資訊/);
+  clickAction(values, 'request-complete-common-makeup', { examId, courseKey, seat: '15' });
+  assert.equal(storedClassroom(values).raw, before.raw);
+  clickAction(values, 'confirm-complete-common-makeup');
+  const after = storedClassroom(values).data;
+  assert.equal(after.exams[examId].targets[courseKey].makeups['15'].status, 'completed');
+  assert.deepEqual(after.exams[examId].targets['teaching-class:test-int-v1-j8-806-chem'], before.data.exams[examId].targets['teaching-class:test-int-v1-j8-806-chem']);
+  assert.deepEqual(after.assignments, before.data.assignments);
+  clickAction(values, 'back-exam-hub');
+  assert.match(values.app.innerHTML, /<h1>805班的考試<\/h1>/);
+});
+
+test('共同頁新增經分類選擇後直到儲存才寫入，儲存直接回新增項目的班級資訊', async () => {
+  const values = await installClonedTestProfile('root-create-save', clearTestClassroomCollections);
+  for (const kind of ['assignment', 'exam']) {
+    const before = storedClassroom(values);
+    clickAction(values, `open-${kind}-hub`);
+    clickAction(values, `add-common-${kind}`);
+    clickAction(values, 'choose-record-create-group', { kind, groupKey: 'junior:j8:理化' });
+    values.handlers.input({ target: changeTarget(`${kind}-title`, `測試新增${kind}`) });
+    if (kind === 'exam') clickAction(values, 'apply-exam-batch-time', { mode: 'next' });
+    assert.equal(storedClassroom(values).raw, before.raw);
+    clickAction(values, `save-${kind}`);
+    const collection = kind === 'assignment' ? 'assignments' : 'exams';
+    const records = Object.values(storedClassroom(values).data[collection]);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].title, `測試新增${kind}`);
+    assert.match(values.app.innerHTML, new RegExp(kind === 'assignment' ? '班級作業資訊' : '班級考試資訊'));
+    assert.match(values.app.innerHTML, new RegExp(`測試新增${kind}`));
+    clickAction(values, `back-${kind}-hub`);
+    assert.match(values.app.innerHTML, /data-action="open-class-record"/);
+  }
+});
+
+test('班級新增自動選本班，若同班教多科則只詢問科目並保留本班選擇', async () => {
+  const values = await installClonedTestProfile('class-create-subjects', clearTestClassroomCollections);
+  const before = storedClassroom(values).raw;
+  for (const kind of ['assignment', 'exam']) {
+    openHubClass(values, kind);
+    clickAction(values, `add-common-${kind}`);
+    assert.match(values.app.innerHTML, /data-course-key="teaching-class:test-int-v1-j8-805-chem" aria-pressed="true"/);
+    assert.doesNotMatch(values.app.innerHTML, /data-action="choose-record-create-group"/);
+    clickAction(values, `back-${kind}-form`);
+    assert.match(values.app.innerHTML, new RegExp(`<h1>805班的${kind === 'assignment' ? '作業' : '考試'}<\/h1>`));
+    openHubClass(values, kind, '甲', 'senior', 's2');
+    clickAction(values, `add-common-${kind}`);
+    assert.match(values.app.innerHTML, /選擇科目/);
+    assert.equal((values.app.innerHTML.match(/data-action="choose-record-create-group"/g) || []).length, 2);
+    assert.doesNotMatch(values.app.innerHTML, /data-group-key="junior:j8:理化"/);
+    clickAction(values, 'choose-record-create-group', { kind, groupKey: 'senior:s2:物理探究' });
+    assert.match(values.app.innerHTML, /data-course-key="teaching-class:test-int-v1-s2-a-inquiry" aria-pressed="true"/);
+    clickAction(values, `back-${kind}-form`);
+    assert.doesNotMatch(values.app.innerHTML, /data-action="save-assignment"|data-action="save-exam"|role="dialog"/);
+  }
+  assert.equal(storedClassroom(values).raw, before);
+});
+
+test('跨班共用設定可往返其他班資訊與修改表單，最後返回原班作業或考試', async () => {
+  const values = await installClonedTestProfile('shared-overview-return');
+  const before = storedClassroom(values).raw;
+  for (const [kind, id] of [['assignment', 'test-int-v1-assignment-density'], ['exam', 'test-int-v1-exam-weekly']]) {
+    openHubClass(values, kind);
+    openClassRecord(values, kind, id);
+    clickAction(values, 'open-record-shared-overview', { kind });
+    assert.match(values.app.innerHTML, /<h1>選擇班級與時間<\/h1>/);
+    clickAction(values, `open-common-${kind}-class`, { courseKey: 'teaching-class:test-int-v1-j8-806-chem' });
+    assert.match(values.app.innerHTML, /<dd>806班<\/dd>/);
+    clickAction(values, `back-${kind}-hub`);
+    assert.match(values.app.innerHTML, /<h1>選擇班級與時間<\/h1>/);
+    clickAction(values, `edit-common-${kind}`);
+    assert.match(values.app.innerHTML, new RegExp(`data-action="save-${kind}"`));
+    clickAction(values, `back-${kind}-form`);
+    assert.match(values.app.innerHTML, /<h1>選擇班級與時間<\/h1>/);
+    clickAction(values, `back-${kind}-hub`);
+    assert.match(values.app.innerHTML, /<dd>805班<\/dd>/);
+    clickAction(values, `start-common-${kind}-check`);
+    assert.match(values.app.innerHTML, /class="seat-grid"/);
+    clickAction(values, kind === 'assignment' ? 'back-course' : 'back-exam-attendance');
+    assert.match(values.app.innerHTML, /<dd>805班<\/dd>/);
+  }
+  assert.equal(storedClassroom(values).raw, before);
+});
+
+test('本堂課的共同頁入口直接顯示本班清單，返回恢復原課堂', async () => {
+  const values = await installClonedTestProfile('course-entry-return');
+  clickAction(values, 'open-course', { slot: 'p2' });
+  clickAction(values, 'enter-course');
+  for (const kind of ['assignment', 'exam']) {
+    clickAction(values, `open-course-${kind}-hub`);
+    assert.match(values.app.innerHTML, new RegExp(`<h1>805班的${kind === 'assignment' ? '作業' : '考試'}<\/h1>`));
+    assert.match(values.app.innerHTML, /aria-label="返回本堂課"/);
+    clickAction(values, `back-${kind}-hub`);
+    assert.match(values.app.innerHTML, new RegExp(`data-action="add-${kind}"`));
+    assert.match(values.app.innerHTML, /<h1>805班 <span>理化<\/span><\/h1>/);
+    assert.doesNotMatch(values.app.innerHTML, /data-action="open-record-class"|data-action="open-class-record"/);
+  }
 });
 
 test('共通分類沒有可用課表時仍開啟表單並顯示明確排程驗證', async () => {
@@ -328,6 +524,7 @@ test('行動裝置選完考試日期後首次開啟共同節次不會被整頁�
   values.handlers.click({ target: actionTarget('add-common-exam') });
   ensureExamCourseSelected(values, 'teaching-class:test-int-v1-j8-805-chem');
   ensureExamCourseSelected(values, 'teaching-class:test-int-v1-j8-806-chem');
+  ensureExamCourseSelected(values, 'teaching-class:test-int-v1-j8-807-chem', false);
   values.handlers.click({ target: actionTarget('open-exam-common-time') });
 
   const dateInput = changeTarget('exam-batch-date', mondayKey);
@@ -359,6 +556,7 @@ test('新增共同考試可選共同日期，節次留空依各班課表，選�
   values.handlers.click({ target: actionTarget('add-common-exam') });
   ensureExamCourseSelected(values, 'teaching-class:test-int-v1-j8-805-chem');
   ensureExamCourseSelected(values, 'teaching-class:test-int-v1-j8-806-chem');
+  ensureExamCourseSelected(values, 'teaching-class:test-int-v1-j8-807-chem', false);
   values.handlers.click({ target: actionTarget('open-exam-common-time') });
 
   assert.match(values.app.innerHTML, /data-action="exam-batch-date"/);
