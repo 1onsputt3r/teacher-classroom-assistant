@@ -375,6 +375,7 @@ body:has(.reminder-sheet-backdrop) { overflow: hidden; }
 
 .draw-tool-card > span { background: #2e7465; }
 .draw-content { padding-top: 18px; }
+.draw-weekly-note { margin: 12px 0 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
 .draw-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
 .draw-title-row h1 { font-size: clamp(24px, 7vw, 34px); }
 .draw-participants { flex: 0 0 auto; margin-top: 4px; padding: 7px 9px; border-radius: 10px; background: var(--brand-soft); color: var(--brand-dark); font-size: 12px; font-weight: 850; }
@@ -445,13 +446,13 @@ body:has(.draw-sheet-backdrop) { overflow: hidden; }
 .draw-manual-status { margin: 8px 1px 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .draw-pool-mode-note { margin: 0 0 12px; padding: 11px 12px; border: 1px solid #ccd4d0; border-radius: 13px; background: #f4f5f2; color: var(--muted); }
 .draw-pool-mode-note strong, .draw-pool-mode-note span { display: block; }
-.draw-pool-mode-note strong { color: var(--ink); font-size: 12px; }
-.draw-pool-mode-note span { margin-top: 4px; font-size: 11px; line-height: 1.5; }
+.draw-pool-mode-note strong { color: var(--ink); font-size: 16px; }
+.draw-pool-mode-note span { margin-top: 4px; font-size: 14px; line-height: 1.5; }
 .draw-pool-list { display: grid; gap: 8px; }
 .draw-pool-row { padding: 12px 13px; border: 1px solid var(--line); border-radius: 13px; background: white; display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; }
-.draw-pool-row strong { font-size: 12px; }
-.draw-pool-row span { color: var(--brand); font-size: 12px; font-weight: 900; }
-.draw-pool-row small { grid-column: 1 / -1; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.draw-pool-row strong { font-size: 16px; }
+.draw-pool-row span { color: var(--brand); font-size: 16px; font-weight: 900; }
+.draw-pool-row small { grid-column: 1 / -1; color: var(--muted); font-size: 14px; line-height: 1.5; }
 .draw-pool-row.base-row { background: #f6f7f4; }
 .draw-pool-empty { margin: 2px 0 8px; color: var(--muted); font-size: 12px; }
 .draw-history-records { margin: 0; padding: 0; list-style: none; }

@@ -2893,6 +2893,54 @@ export function createWeightedDrawPool({
   });
 }
 
+export function drawWeekRange(dateKey) {
+  if (typeof dateKey !== 'string' || !validCalendarDateKey(dateKey)) return null;
+  const daysSinceMonday = (dateFromKey(dateKey).getDay() + 6) % 7;
+  const startDateKey = addDaysToDateKey(dateKey, -daysSinceMonday);
+  return { startDateKey, endDateKey: addDaysToDateKey(startDateKey, 6) };
+}
+
+export function weeklyDrawCounts(drawSessions = {}, courseKey, dateKey) {
+  const week = drawWeekRange(dateKey);
+  const counts = {};
+  if (!week || !isRecord(drawSessions) || typeof courseKey !== 'string' || !courseKey) return counts;
+
+  for (const [sessionKey, session] of Object.entries(drawSessions)) {
+    // The course key can contain colons, so only split off the date and slot.
+    const firstSeparator = sessionKey.indexOf(':');
+    const secondSeparator = sessionKey.indexOf(':', firstSeparator + 1);
+    if (firstSeparator < 0 || secondSeparator < 0) continue;
+    const sessionDateKey = sessionKey.slice(0, firstSeparator);
+    const slotId = sessionKey.slice(firstSeparator + 1, secondSeparator);
+    const sessionCourseKey = sessionKey.slice(secondSeparator + 1);
+    if (!slotId.trim() || sessionCourseKey !== courseKey
+      || !validCalendarDateKey(sessionDateKey)
+      || sessionDateKey < week.startDateKey || sessionDateKey > week.endDateKey
+      || !isRecord(session) || !Array.isArray(session.history)) continue;
+
+    // History is the source of truth; currentSeat and seatsThisRound overlap it.
+    for (const record of session.history) {
+      if (!isRecord(record) || record.absent === true
+        || !['number', 'string'].includes(typeof record.seat)) continue;
+      const seat = Number(record.seat);
+      if (!Number.isSafeInteger(seat) || seat < 1) continue;
+      counts[seat] = (counts[seat] || 0) + 1;
+    }
+  }
+  return counts;
+}
+
+export function applyWeeklyDrawAdjustment(pool = [], weeklyCounts = {}) {
+  const counts = isRecord(weeklyCounts) ? weeklyCounts : {};
+  return pool.map((entry) => {
+    const value = Object.prototype.hasOwnProperty.call(counts, entry.seat) ? counts[entry.seat] : 0;
+    const count = ['number', 'string'].includes(typeof value) ? Number(value) : 0;
+    const weeklyCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+    const baseWeight = entry.weight;
+    return { ...entry, baseWeight, weeklyCount, weight: baseWeight / (1 + weeklyCount) };
+  });
+}
+
 export function pickWeightedDrawSeat(pool = [], randomValue = Math.random()) {
   if (!pool.length) return null;
   const total = pool.reduce((sum, entry) => sum + Math.max(0, Number(entry.weight) || 0), 0);

@@ -138,6 +138,228 @@ function storedClassroom(values) {
   return { key, raw: values.get(key), data: JSON.parse(values.get(key)) };
 }
 
+async function installWeeklyDrawProfile(label, mutate = () => {}) {
+  let fixture;
+  const values = await installClonedTestProfile(`weekly-draw-${label}`, (stored, suffix) => {
+    const classroomKey = `teacher-assistant-preview-v2-homework-v4${suffix}`;
+    const teachingKey = `teacher-assistant-preview-v2-teaching-classes-v1${suffix}`;
+    const scheduleKey = `teacher-assistant-preview-v2-schedule-v2${suffix}`;
+    const classroom = JSON.parse(stored.get(classroomKey));
+    const teaching = JSON.parse(stored.get(teachingKey));
+    const overrides = JSON.parse(stored.get(scheduleKey));
+    const today = classroom.meta.referenceDateKey;
+    const monday = shiftDateKey(today, -14 - ((new Date(`${today}T12:00:00`).getDay() + 6) % 7));
+    const tuesday = shiftDateKey(monday, 1);
+    const sunday = shiftDateKey(monday, 6);
+    const nextMonday = shiftDateKey(monday, 7);
+    const courseKey = 'teaching-class:test-int-v1-j8-805-chem';
+    const otherCourseKey = 'teaching-class:test-int-v1-j8-806-chem';
+    const course = overrides[`${today}:p2`];
+    const otherCourse = { ...course, teachingClassId: 'test-int-v1-j8-806-chem', className: '6', classLabel: '806' };
+    for (const classes of Object.values(teaching.byAcademicYear)) {
+      for (const record of classes) {
+        if ([course.teachingClassId, otherCourse.teachingClassId].includes(record.id)) {
+          record.lastSeat = 3;
+          record.vacantSeats = [];
+        }
+      }
+    }
+    for (const dateKey of [monday, tuesday, sunday, nextMonday]) overrides[`${dateKey}:p2`] = course;
+    overrides[`${monday}:p3`] = otherCourse;
+    const courseRecord = classroom.courses[courseKey];
+    courseRecord.manualDrawWeightsByMonth = Object.fromEntries(
+      [...new Set([monday, tuesday, sunday, nextMonday].map((dateKey) => dateKey.slice(0, 7)))].map((month) => [month, { 1: 1 }])
+    );
+    classroom.drawSessions = {};
+    fixture = { monday, tuesday, sunday, nextMonday, courseKey, otherCourseKey, sessionKey: `${monday}:p2:${courseKey}` };
+    mutate(classroom, fixture);
+    stored.set(classroomKey, JSON.stringify(classroom));
+    stored.set(teachingKey, JSON.stringify(teaching));
+    stored.set(scheduleKey, JSON.stringify(overrides));
+  });
+  return { values, ...fixture };
+}
+
+function savedDrawSession(history = [], options = {}) {
+  return {
+    useWeighting: true,
+    allowRepeat: false,
+    currentSeat: null,
+    excludedSeats: [],
+    seatsThisRound: [],
+    history: history.map((record, index) => ({ id: `fixture-draw-${index}`, time: '09:28', absent: false, ...record })),
+    updatedAt: '2026-01-01T09:28:00',
+    ...options
+  };
+}
+
+function openDrawLesson(values, dateKey, slot = 'p2') {
+  clickAction(values, 'back-today');
+  clickAction(values, 'open-calendar');
+  clickAction(values, 'select-calendar-date', { date: dateKey });
+  clickAction(values, 'open-course', { slot });
+  assert.match(values.app.innerHTML, /data-action="enter-course"/);
+  clickAction(values, 'enter-course');
+  clickAction(values, 'open-draw');
+  assert.match(values.app.innerHTML, /<h1>抽一位同學<\/h1>/);
+}
+
+function drawPoolRow(values, seat) {
+  const row = values.app.innerHTML.match(new RegExp(`<article\\b[^>]*data-draw-pool-seat="${seat}"[^>]*>[\\s\\S]*?<\\/article>`))?.[0];
+  assert.ok(row, `卡池應顯示 ${seat} 號的個別權重`);
+  return row;
+}
+
+function assertDrawPoolWeight(values, seat, expected) {
+  const row = drawPoolRow(values, seat);
+  const effectiveWeight = Number(row.match(/data-effective-weight="([^"]+)"/)?.[1]);
+  assert.ok(Math.abs(effectiveWeight - expected) < 1e-12, `${seat} 號實際權重應為 ${expected}，得到 ${effectiveWeight}`);
+  return row;
+}
+
+function withDrawRandom(value, action) {
+  const originalRandom = Math.random;
+  try {
+    Math.random = () => value;
+    action();
+  } finally {
+    Math.random = originalRandom;
+  }
+}
+
+test('每週抽籤依所選課堂的週一至週日與精確課程統計，切換課堂還原且查看不改寫資料', async () => {
+  const fixture = await installWeeklyDrawProfile('week-and-course-scope', (classroom, context) => {
+    const { monday, tuesday, sunday, nextMonday, courseKey, otherCourseKey, sessionKey } = context;
+    const repeated = (count) => Array.from({ length: count }, () => ({ seat: 1 }));
+    classroom.drawSessions = {
+      [`${shiftDateKey(monday, -1)}:p1:${courseKey}`]: savedDrawSession(repeated(10)),
+      [`${monday}:p1:${courseKey}`]: savedDrawSession([{ seat: 1 }]),
+      [`${tuesday}:p1:${courseKey}`]: savedDrawSession([{ seat: 1 }]),
+      [`${sunday}:p1:${courseKey}`]: savedDrawSession([{ seat: 1 }]),
+      [`${nextMonday}:p1:${courseKey}`]: savedDrawSession(repeated(10)),
+      [`${monday}:p1:${otherCourseKey}`]: savedDrawSession(repeated(8)),
+      [`${monday}:p1:${courseKey}:other-subject`]: savedDrawSession(repeated(9)),
+      [sessionKey]: savedDrawSession([{ seat: 1, absent: true }, { seat: 2 }], {
+        currentSeat: 2, excludedSeats: [1], seatsThisRound: [1, 2], allowRepeat: true
+      })
+    };
+  });
+  const { values, monday, sunday, nextMonday, sessionKey } = fixture;
+  const before = [...values].sort(([left], [right]) => left.localeCompare(right));
+  openDrawLesson(values, monday);
+  assert.match(values.app.innerHTML, /aria-label="使用額外加權"/);
+  clickAction(values, 'open-draw-sheet', { sheet: 'pool' });
+  assert.match(assertDrawPoolWeight(values, 1, 0.5), /本週抽中 3 次 → ÷4/);
+  assert.match(assertDrawPoolWeight(values, 2, 0.5), /本週抽中 1 次 → ÷2/);
+
+  openDrawLesson(values, sunday);
+  clickAction(values, 'open-draw-sheet', { sheet: 'pool' });
+  assert.match(assertDrawPoolWeight(values, 1, 0.5), /本週抽中 3 次 → ÷4/);
+  openDrawLesson(values, nextMonday);
+  clickAction(values, 'open-draw-sheet', { sheet: 'pool' });
+  assert.match(assertDrawPoolWeight(values, 1, 2 / 11), /本週抽中 10 次 → ÷11/);
+  openDrawLesson(values, monday, 'p3');
+  clickAction(values, 'open-draw-sheet', { sheet: 'pool' });
+  assert.match(assertDrawPoolWeight(values, 1, 1 / 9), /本週抽中 8 次 → ÷9/);
+
+  openDrawLesson(values, monday);
+  assert.match(values.app.innerHTML, /aria-checked="true" aria-label="同一人可再抽中"/);
+  clickAction(values, 'open-draw-sheet', { sheet: 'history' });
+  assert.match(values.app.innerHTML, /01號<\/span><strong>不在場<\/strong>/);
+  assert.match(values.app.innerHTML, /02號<\/span><strong>抽中<\/strong>/);
+  assert.equal(storedClassroom(values).data.drawSessions[sessionKey].currentSeat, 2);
+  assert.deepEqual([...values].sort(([left], [right]) => left.localeCompare(right)), before);
+});
+
+test('關閉額外加權仍使用每週分數，顯示兩位小數但抽樣保留完整精度', async () => {
+  const { values, monday, courseKey, sessionKey } = await installWeeklyDrawProfile('fractional-sampling', (classroom, context) => {
+    classroom.drawSessions[`${context.monday}:p1:${context.courseKey}`] = savedDrawSession([{ seat: 1 }, { seat: 1 }]);
+    classroom.drawSessions[context.sessionKey] = savedDrawSession([], { useWeighting: false, allowRepeat: true });
+  });
+  const before = storedClassroom(values).data;
+  const originalRandom = Math.random;
+  openDrawLesson(values, monday);
+  assert.match(values.app.innerHTML, /aria-checked="false" aria-label="使用額外加權"/);
+  assert.doesNotMatch(values.app.innerHTML, /所有可抽座號機率相同|每人等機率|每位同學等機率/);
+  clickAction(values, 'open-draw-sheet', { sheet: 'pool' });
+  const row = assertDrawPoolWeight(values, 1, 1 / 3);
+  assert.match(row, /本週抽中 2 次 → ÷3/);
+  assert.match(row.replace(/<[^>]*>/g, ''), /0\.33/);
+  assert.doesNotMatch(row.replace(/<[^>]*>/g, ''), /0\.333/);
+  clickAction(values, 'close-draw-sheet');
+
+  withDrawRandom(0.1425, () => clickAction(values, 'draw-one'));
+  assert.equal(Math.random, originalRandom);
+  assert.equal(storedClassroom(values).data.drawSessions[sessionKey].currentSeat, 1, '1/3 不可先四捨五入為 0.33 再抽樣');
+  withDrawRandom(0.2, () => clickAction(values, 'draw-one'));
+  assert.equal(storedClassroom(values).data.drawSessions[sessionKey].currentSeat, 2, '關閉額外加權後不可退回等機率抽樣');
+  clickAction(values, 'open-draw-sheet', { sheet: 'pool' });
+  assert.match(assertDrawPoolWeight(values, 1, 0.25), /本週抽中 3 次 → ÷4/);
+  assert.match(assertDrawPoolWeight(values, 2, 0.5), /本週抽中 1 次 → ÷2/);
+  clickAction(values, 'toggle-draw-weighting');
+  assertDrawPoolWeight(values, 1, 0.5);
+  const after = storedClassroom(values).data;
+  assert.deepEqual(after.courses[courseKey], before.courses[courseKey]);
+  assert.deepEqual(after.reminders, before.reminders);
+  assert.deepEqual(after.assignments, before.assignments);
+  assert.deepEqual(after.drawSessions[`${monday}:p1:${courseKey}`], before.drawSessions[`${monday}:p1:${courseKey}`]);
+});
+
+test('不在場重抽不計入本週次數，本輪不重複且新一輪與重新載入均保留本週紀錄', async () => {
+  const { values, monday, tuesday, courseKey, sessionKey } = await installWeeklyDrawProfile('absence-round-and-reload', (classroom, context) => {
+    classroom.drawSessions[context.sessionKey] = savedDrawSession([], { useWeighting: false });
+  });
+  const before = storedClassroom(values).data;
+  const otherStorage = [...values].filter(([key]) => !key.includes('homework-v4'));
+  openDrawLesson(values, monday);
+  withDrawRandom(0, () => clickAction(values, 'draw-one'));
+  withDrawRandom(0, () => clickAction(values, 'draw-one'));
+  assert.equal(storedClassroom(values).data.drawSessions[sessionKey].currentSeat, 2, '同一節不重複時應排除已抽中的 1 號');
+  withDrawRandom(0, () => clickAction(values, 'absent-redraw'));
+  let saved = storedClassroom(values).data.drawSessions[sessionKey];
+  assert.equal(saved.currentSeat, 3);
+  assert.deepEqual(saved.history.map(({ seat, absent }) => [seat, absent]), [[3, false], [2, true], [1, false]]);
+  assert.deepEqual(saved.excludedSeats, [2]);
+  assert.match(values.app.innerHTML, /data-action="restart-draw-round"/);
+
+  clickAction(values, 'toggle-draw-exclusion', { seat: '2' });
+  assert.match(values.app.innerHTML, /data-action="restart-draw-round"/);
+  withDrawRandom(0, () => clickAction(values, 'restart-draw-round'));
+  saved = storedClassroom(values).data.drawSessions[sessionKey];
+  assert.equal(saved.currentSeat, 1);
+  assert.deepEqual(saved.seatsThisRound, [1]);
+  assert.equal(saved.history.length, 4, '新一輪只清除本輪排除，不得清除本節與本週紀錄');
+  clickAction(values, 'toggle-draw-repeat');
+  withDrawRandom(0, () => clickAction(values, 'draw-one'));
+  saved = storedClassroom(values).data.drawSessions[sessionKey];
+  assert.equal(saved.currentSeat, 1);
+  assert.deepEqual(saved.seatsThisRound, [1, 1]);
+  assert.equal(saved.history.length, 5);
+  clickAction(values, 'open-draw-sheet', { sheet: 'pool' });
+  assert.match(assertDrawPoolWeight(values, 1, 0.25), /本週抽中 3 次 → ÷4/);
+  const absentRow = values.app.innerHTML.match(/<article\b[^>]*data-draw-pool-seat="2"[^>]*>[\s\S]*?<\/article>/)?.[0];
+  if (absentRow) assert.doesNotMatch(absentRow, /本週抽中 [1-9]/);
+
+  openDrawLesson(values, tuesday);
+  clickAction(values, 'open-draw-sheet', { sheet: 'pool' });
+  assert.match(assertDrawPoolWeight(values, 1, 0.5), /本週抽中 3 次 → ÷4/);
+  assert.equal(storedClassroom(values).data.drawSessions[`${tuesday}:p2:${courseKey}`], undefined, '查看新課堂不應憑空新增抽籤儲存');
+  openDrawLesson(values, monday);
+  assert.match(values.app.innerHTML, /aria-checked="true" aria-label="同一人可再抽中"/);
+  assert.match(values.app.innerHTML, /aria-checked="false" aria-label="使用額外加權"/);
+
+  const restored = installBrowserStubs('?data-profile=test');
+  for (const [key, value] of values) restored.set(key, value);
+  await import(`../preview-v2/app.js?weekly-draw-reload-${Date.now()}`);
+  openDrawLesson(restored, monday);
+  clickAction(restored, 'open-draw-sheet', { sheet: 'pool' });
+  assert.match(assertDrawPoolWeight(restored, 1, 0.25), /本週抽中 3 次 → ÷4/);
+  const after = storedClassroom(restored).data;
+  assert.deepEqual(after.drawSessions[sessionKey], saved);
+  assert.deepEqual({ ...after, drawSessions: {} }, { ...before, drawSessions: {} });
+  assert.deepEqual([...restored].filter(([key]) => !key.includes('homework-v4')), otherStorage);
+});
+
 test('聯動測試資料使用獨立鍵並涵蓋課表、名冊與四類課堂資料', async () => {
   const values = installBrowserStubs('?data-profile=test');
   await import(`../preview-v2/app.js?startup-integration=${Date.now()}`);

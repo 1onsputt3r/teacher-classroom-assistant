@@ -10,6 +10,7 @@ import {
   activeManagedScheduleVersion,
   academicPeriodForLocalDate,
   applyAssignmentTimeResolution,
+  applyWeeklyDrawAdjustment,
   assignmentClassDetail,
   assignmentEditSharingNotice,
   buildCommonAssignmentView,
@@ -38,6 +39,7 @@ import {
   createWeightedDrawPool,
   dateFromKey,
   dateRelation,
+  drawWeekRange,
   cancelAssignmentTarget,
   deferAssignmentTarget,
   deferExamTarget,
@@ -100,8 +102,9 @@ import {
   validateManagedScheduleTimes,
   validateManagedScheduleVersionDraft,
   validateTeachingClassBatchDraft,
-  validateTeachingClassDraft
-} from './core.mjs?v=20260907-class-first-1';
+  validateTeachingClassDraft,
+  weeklyDrawCounts
+} from './core.mjs?v=20260907-weekly-draw-1';
 
 const app = document.querySelector('#app');
 const TEST_DATA_PROFILE = 'integration-v1';
@@ -2052,7 +2055,7 @@ function renderCourse() {
         <div class="accordion assignment-accordion"><button class="accordion-trigger" data-action="toggle-accordion" data-panel="assignment" aria-expanded="${assignmentOpen}"><span class="type-icon assignment-icon" aria-hidden="true">作</span><span class="accordion-title"><small>作業</small><strong>檢查與安排</strong><em>${assignmentLabel}</em></span><span class="chevron">⌄</span></button>${assignmentOpen ? renderAssignmentPanel(assignments) : ''}</div>
         <div class="accordion exam-accordion"><button class="accordion-trigger" data-action="toggle-accordion" data-panel="exam" aria-expanded="${examOpen}"><span class="type-icon exam-icon" aria-hidden="true">考</span><span class="accordion-title"><small>考試</small><strong>點名與安排</strong><em>${examLabel}</em></span><span class="chevron">⌄</span></button>${examOpen ? renderExamPanel(exams) : ''}</div>
       </section>
-      <section class="course-section"><h2>課堂工具</h2><div class="tool-grid"><button type="button" class="tool-card available" data-action="open-reminders"><span aria-hidden="true">!</span><div><strong>課堂提醒</strong><small>${reminderCount ? `本堂已登記 ${reminderCount} 次` : '快速登記座號'}</small></div></button><button type="button" class="tool-card available draw-tool-card" data-action="open-draw"><span aria-hidden="true">#</span><div><strong>抽籤</strong><small>可使用加權或等機率</small></div></button></div></section>
+      <section class="course-section"><h2>課堂工具</h2><div class="tool-grid"><button type="button" class="tool-card available" data-action="open-reminders"><span aria-hidden="true">!</span><div><strong>課堂提醒</strong><small>${reminderCount ? `本堂已登記 ${reminderCount} 次` : '快速登記座號'}</small></div></button><button type="button" class="tool-card available draw-tool-card" data-action="open-draw"><span aria-hidden="true">#</span><div><strong>抽籤</strong><small>本週抽過會降低權重</small></div></button></div></section>
     </main>`;
 }
 
@@ -3303,9 +3306,24 @@ function normalizeStoredManualDrawWeights(cap = drawWeightSources().cap) {
   updateDrawCourseRecord({ manualDrawWeightsByMonth: normalized });
 }
 
+function currentWeekDrawCounts() {
+  const sessionKey = classroomReminderSessionKey(state.session);
+  if (!sessionKey) return {};
+  // The active history may already mark an absent result before the redraw is saved.
+  // Replace this session's snapshot so it is counted once, using its latest state.
+  const sessions = state.drawSessionKey === sessionKey
+    ? { ...(homeworkRecords.drawSessions || {}), [sessionKey]: { history: state.drawHistory } }
+    : homeworkRecords.drawSessions || {};
+  return weeklyDrawCounts(sessions, sessionCourseKey(), state.session.dateKey);
+}
+
+function displayDrawWeight(weight) {
+  return weight > 0 && weight < 0.01 ? '小於 0.01' : String(Number(weight.toFixed(2)));
+}
+
 function currentDrawPool(includeEntireClass = false, useWeighting = state.drawUseWeighting) {
   const sources = drawWeightSources();
-  return createWeightedDrawPool({
+  const pool = createWeightedDrawPool({
     activeSeats: activeRosterSeats(state.session),
     excludedSeats: includeEntireClass ? [] : state.drawExcludedSeats,
     drawnSeats: includeEntireClass ? [] : state.drawSeatsThisRound,
@@ -3316,6 +3334,7 @@ function currentDrawPool(includeEntireClass = false, useWeighting = state.drawUs
     manualWeights: sources.manualWeights,
     cap: sources.cap
   });
+  return applyWeeklyDrawAdjustment(pool, currentWeekDrawCounts());
 }
 
 function drawPreviousSummary() {
@@ -3389,11 +3408,12 @@ function renderDraw() {
         ${currentSeat != null ? '<button type="button" class="secondary-button draw-absent" data-action="absent-redraw">不在場，重抽</button>' : ''}
       </div>
       <section class="draw-options" aria-label="本節抽籤選項">
-        <div class="draw-option draw-switch-option draw-weight-option ${state.drawUseWeighting ? '' : 'is-off'}"><div><strong>本節使用加權</strong><span>${state.drawUseWeighting ? '目前開啟・依作業與本月提醒調整機率' : '目前關閉・所有可抽座號機率相同'}</span></div><button type="button" class="draw-switch" role="switch" aria-checked="${state.drawUseWeighting}" aria-label="本節使用加權" data-action="toggle-draw-weighting"><span></span></button></div>
+        <div class="draw-option draw-switch-option draw-weight-option ${state.drawUseWeighting ? '' : 'is-off'}"><div><strong>使用額外加權</strong><span>${state.drawUseWeighting ? '目前開啟・作業、提醒與手動加權' : '目前關閉・仍套用本週次數調整'}</span></div><button type="button" class="draw-switch" role="switch" aria-checked="${state.drawUseWeighting}" aria-label="使用額外加權" data-action="toggle-draw-weighting"><span></span></button></div>
         <div class="draw-option draw-switch-option"><div><strong>同一人可再抽中</strong><span>${state.drawAllowRepeat ? '目前開啟・本節可能重複抽中' : '目前關閉・本節每人最多一次'}</span></div><button type="button" class="draw-switch" role="switch" aria-checked="${state.drawAllowRepeat}" aria-label="同一人可再抽中" data-action="toggle-draw-repeat"><span></span></button></div>
         <button type="button" class="draw-option draw-option-button" data-action="open-draw-sheet" data-sheet="exclusion" aria-haspopup="dialog"><div><strong>暫不抽取</strong><span>選填・目前 ${state.drawExcludedSeats.length} 人</span></div><span aria-hidden="true">›</span></button>
-        <button type="button" class="draw-option draw-option-button" data-action="open-draw-sheet" data-sheet="pool" aria-haspopup="dialog"><div><strong>查看卡池內容</strong><span>${state.drawUseWeighting ? '權重原因只顯示給老師' : '目前等機率・可查看原設定'}</span></div><span aria-hidden="true">›</span></button>
+        <button type="button" class="draw-option draw-option-button" data-action="open-draw-sheet" data-sheet="pool" aria-haspopup="dialog"><div><strong>查看卡池內容</strong><span>本週次數與權重只顯示給老師</span></div><span aria-hidden="true">›</span></button>
       </section>
+      <p class="draw-weekly-note">本週抽過會降低權重・每週一重新計算</p>
       <p class="visually-hidden" role="status" aria-live="polite">${escapeHtml(state.drawAnnouncement)}</p>
     </main>
     ${renderDrawSheet()}`;
@@ -3416,16 +3436,19 @@ function renderDrawSheet() {
   }
   if (state.drawSheet === 'pool') {
     const sources = drawWeightSources();
-    const pool = currentDrawPool(true, true).sort((left, right) => right.weight - left.weight || left.seat - right.seat);
-    const weighted = pool.filter((entry) => entry.weight > 1);
-    const baseCount = pool.length - weighted.length;
-    const rows = weighted.map((entry) => {
+    const pool = currentDrawPool(true).map((entry) => ({ ...entry, configuredWeight: manualDrawResolutionForSeat(entry.seat, sources).total })).sort((left, right) => right.weight - left.weight || left.seat - right.seat);
+    const detailed = pool.filter((entry) => entry.configuredWeight > 1 || entry.weeklyCount > 0);
+    const baseCount = pool.length - detailed.length;
+    const rows = detailed.map((entry) => {
       const reasons = ['基本 1'];
-      if (entry.homework) reasons.push(`待補交 +${entry.homework}`);
-      if (entry.reminder) reasons.push(`本月提醒 ${sources.reminderCounts[entry.seat] || 0} 次 → +${entry.reminder}`);
-      if (entry.manualRequested) reasons.push(entry.manual < entry.manualRequested ? `手動目前 +${entry.manual}（設定 +${entry.manualRequested}）` : `手動 +${entry.manual}`);
-      const weightLabel = state.drawUseWeighting ? `${entry.weight} 張` : `原設定 ${entry.weight} 張`;
-      return `<article class="draw-pool-row"><strong>${String(entry.seat).padStart(2, '0')}號</strong><span>${weightLabel}</span><small>${reasons.join('・')}</small></article>`;
+      if (state.drawUseWeighting) {
+        if (entry.homework) reasons.push(`待補交 +${entry.homework}`);
+        if (entry.reminder) reasons.push(`本月提醒 ${sources.reminderCounts[entry.seat] || 0} 次 → +${entry.reminder}`);
+        if (entry.manualRequested) reasons.push(entry.manual < entry.manualRequested ? `手動目前 +${entry.manual}（設定 +${entry.manualRequested}）` : `手動 +${entry.manual}`);
+        if (entry.configuredWeight === sources.cap) reasons.push(`上限 ${sources.cap} 張`);
+      } else if (entry.configuredWeight > 1) reasons.push(`原設定 ${entry.configuredWeight} 張（本節未套用）`);
+      if (entry.weeklyCount) reasons.push(`本週抽中 ${entry.weeklyCount} 次 → ÷${entry.weeklyCount + 1}`);
+      return `<article class="draw-pool-row" data-draw-pool-seat="${entry.seat}" data-effective-weight="${entry.weight}"><strong>${String(entry.seat).padStart(2, '0')}號</strong><span>${displayDrawWeight(entry.weight)} 張</span><small>${reasons.join('・')}</small></article>`;
     }).join('');
     if (!roster.activeSeats.includes(state.drawManualSeat)) state.drawManualSeat = roster.activeSeats[0] || null;
     const manualResolution = manualDrawResolutionForSeat(state.drawManualSeat, sources);
@@ -3439,8 +3462,11 @@ function renderDrawSheet() {
       : `目前實際套用 +${manualResolution.applied}。`;
     const seatOptions = roster.activeSeats.map((seat) => `<option value="${seat}" ${seat === state.drawManualSeat ? 'selected' : ''}>${String(seat).padStart(2, '0')}號</option>`).join('');
     const capOptions = Array.from({ length: 9 }, (_, index) => index + 2).map((cap) => `<option value="${cap}" ${cap === sources.cap ? 'selected' : ''}>最多 ${cap} 張</option>`).join('');
-    const modeNotice = state.drawUseWeighting ? '' : '<p class="draw-pool-mode-note"><strong>本節未使用加權</strong><span>每人等機率；下列為保留的原加權設定，可繼續查看或調整。</span></p>';
-    return `<div class="draw-sheet-backdrop" data-action="close-draw-sheet"><section class="draw-sheet draw-pool-sheet${enteringClass}" role="dialog" aria-modal="true" aria-labelledby="draw-sheet-title" data-draw-sheet><div class="draw-sheet-heading"><div><h2 id="draw-sheet-title">卡池內容</h2><p>${state.drawUseWeighting ? '抽中結果不顯示權重原因' : '本節每位同學等機率'}</p></div>${closeButton}</div><div class="draw-sheet-body">${modeNotice}<section class="draw-manual-panel" aria-labelledby="manual-draw-title"><div class="draw-manual-heading"><div><strong id="manual-draw-title">手動月加權</strong><small>${drawMonthKey().replace('-', ' 年 ')} 月・選填</small></div><select data-action="draw-weight-cap" aria-label="每人權重上限">${capOptions}</select></div><div class="draw-manual-controls"><select data-action="draw-manual-seat" aria-label="選擇座號" ${state.drawManualSeat == null ? 'disabled' : ''}>${seatOptions}</select><button type="button" data-action="adjust-draw-manual" data-delta="-1" aria-label="${state.drawManualSeat || ''} 號手動加權減一" ${state.drawManualSeat == null || manualValue === 0 ? 'disabled' : ''}>−1</button><output aria-live="polite">+${manualValue}</output><button type="button" data-action="adjust-draw-manual" data-delta="1" aria-label="${state.drawManualSeat || ''} 號手動加權加一" ${state.drawManualSeat == null || manualValue >= manualResolution.maxRequested ? 'disabled' : ''}>+1</button></div><p class="draw-manual-status">${manualStatus}</p></section><div class="draw-pool-list">${rows || '<p class="draw-pool-empty">目前沒有額外加權設定。</p>'}${baseCount ? `<article class="draw-pool-row base-row"><strong>其他座號</strong><span>1 張</span><small>${baseCount} 位目前只有基本卡</small></article>` : ''}</div></div></section></div>`;
+    const modeNotice = state.drawUseWeighting ? '' : '<p class="draw-pool-mode-note"><strong>本節未使用額外加權</strong><span>作業、提醒與手動設定保留；仍依本週抽中次數降低權重。</span></p>';
+    const week = drawWeekRange(state.session.dateKey);
+    const weekLabel = week ? `${formatDate(week.startDateKey)}～${formatDate(week.endDateKey)}` : '';
+    const weeklyNotice = `<p class="draw-pool-mode-note"><strong>本週 ${weekLabel}・同班同科</strong><span>原權重 ÷（本週抽中次數＋1）；不在場不計次。顯示值取小數兩位，抽籤使用完整精度。</span></p>`;
+    return `<div class="draw-sheet-backdrop" data-action="close-draw-sheet"><section class="draw-sheet draw-pool-sheet${enteringClass}" role="dialog" aria-modal="true" aria-labelledby="draw-sheet-title" data-draw-sheet><div class="draw-sheet-heading"><div><h2 id="draw-sheet-title">卡池內容</h2><p>全班權重・仍依本堂參與設定抽取</p></div>${closeButton}</div><div class="draw-sheet-body">${modeNotice}${weeklyNotice}<section class="draw-manual-panel" aria-labelledby="manual-draw-title"><div class="draw-manual-heading"><div><strong id="manual-draw-title">手動月加權</strong><small>${drawMonthKey().replace('-', ' 年 ')} 月・選填</small></div><select data-action="draw-weight-cap" aria-label="每人權重上限">${capOptions}</select></div><div class="draw-manual-controls"><select data-action="draw-manual-seat" aria-label="選擇座號" ${state.drawManualSeat == null ? 'disabled' : ''}>${seatOptions}</select><button type="button" data-action="adjust-draw-manual" data-delta="-1" aria-label="${state.drawManualSeat || ''} 號手動加權減一" ${state.drawManualSeat == null || manualValue === 0 ? 'disabled' : ''}>−1</button><output aria-live="polite">+${manualValue}</output><button type="button" data-action="adjust-draw-manual" data-delta="1" aria-label="${state.drawManualSeat || ''} 號手動加權加一" ${state.drawManualSeat == null || manualValue >= manualResolution.maxRequested ? 'disabled' : ''}>+1</button></div><p class="draw-manual-status">${manualStatus}</p></section><div class="draw-pool-list">${rows}${baseCount ? `<article class="draw-pool-row base-row"><strong>其他座號</strong><span>1 張</span><small>${baseCount} 位・本週未抽中且無額外加權</small></article>` : ''}</div></div></section></div>`;
   }
   const records = state.drawHistory.map((record) => `<li class="draw-history-record"><span>${String(record.seat).padStart(2, '0')}號</span><strong>${record.absent ? '不在場' : '抽中'}</strong><time>${escapeHtml(record.time)}</time></li>`).join('');
   return `<div class="draw-sheet-backdrop" data-action="close-draw-sheet"><section class="draw-sheet${enteringClass}" role="dialog" aria-modal="true" aria-labelledby="draw-sheet-title" data-draw-sheet><div class="draw-sheet-heading"><div><h2 id="draw-sheet-title">本節已抽</h2><p>最新結果排在最上面</p></div>${closeButton}</div><div class="draw-sheet-body">${records ? `<ol class="draw-history-records">${records}</ol>` : '<p class="draw-history-empty">尚未抽籤</p>'}</div></section></div>`;
@@ -4067,7 +4093,7 @@ app.addEventListener('click', (event) => {
   if (action === 'close-draw-sheet' && (target.matches('button') || event.target === target)) closeDrawSheet();
   if (action === 'toggle-draw-weighting') {
     state.drawUseWeighting = !state.drawUseWeighting;
-    state.drawAnnouncement = state.drawUseWeighting ? '本節已開啟加權抽籤。' : '本節已關閉加權，所有可抽座號機率相同。';
+    state.drawAnnouncement = state.drawUseWeighting ? '本節已開啟額外加權，仍套用本週次數調整。' : '本節已關閉額外加權，仍依本週抽中次數降低權重。';
     persistDrawInteraction();
     render();
     window.requestAnimationFrame(() => app.querySelector('[data-action="toggle-draw-weighting"]')?.focus({ preventScroll: true }));
