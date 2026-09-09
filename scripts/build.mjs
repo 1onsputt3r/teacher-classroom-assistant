@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 const root = resolve(process.cwd());
 const dist = resolve(root, 'dist');
 const files = ['index.html', 'manifest.webmanifest', 'sw.js', 'icon.svg', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png', 'og.jpg'];
-const previewV2Files = ['index.html', 'styles.css', 'app.js', 'core.mjs'];
+const previewV2Files = ['index.html', 'styles.css', 'app.js', 'core.mjs', 'timer.mjs'];
 
 await rm(dist, { recursive: true, force: true });
 await mkdir(dist, { recursive: true });

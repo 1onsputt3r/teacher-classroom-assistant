@@ -5,6 +5,9 @@ function installBrowserStubs(search = '', options = {}) {
   const values = new Map();
   const handlers = {};
   const appListeners = {};
+  const documentHandlers = {};
+  const intervals = new Map();
+  let intervalId = 0;
   let reloadCount = 0;
   const app = {
     innerHTML: '',
@@ -24,14 +27,15 @@ function installBrowserStubs(search = '', options = {}) {
     visibilityState: 'hidden',
     activeElement: null,
     querySelector(selector) { return selector === '#app' ? app : null; },
-    addEventListener() {}
+    addEventListener(type, handler) { documentHandlers[type] = handler; }
   };
   globalThis.window = {
     location: { search, reload() { reloadCount += 1; } },
     scrollY: 0,
     addEventListener(type, handler) { handlers[type] = handler; },
     requestAnimationFrame(callback) { callback(); return 1; },
-    setInterval() { return 1; },
+    setInterval(callback, delay) { const id = ++intervalId; intervals.set(id, { callback, delay }); return id; },
+    clearInterval(id) { intervals.delete(id); },
     setTimeout,
     clearTimeout,
     matchMedia(query) {
@@ -50,6 +54,8 @@ function installBrowserStubs(search = '', options = {}) {
     app: { value: app },
     appListeners: { value: appListeners },
     handlers: { value: handlers },
+    documentHandlers: { value: documentHandlers },
+    intervals: { value: intervals },
     reloadCount: { get() { return reloadCount; } }
   });
   return values;
@@ -203,6 +209,164 @@ function openDrawLesson(values, dateKey, slot = 'p2') {
   clickAction(values, 'open-draw');
   assert.match(values.app.innerHTML, /<h1>抽一位同學<\/h1>/);
 }
+
+function installTimerPanelStub(values) {
+  let html = values.app.innerHTML, renders = 0, announcements = 0, focusRestores = 0;
+  Object.defineProperty(values.app, 'innerHTML', { configurable: true, get: () => html, set(value) { html = value; renders += 1; } });
+  const output = {
+    get textContent() { return html.match(/data-timer-value>([^<]*)<\/output>/)?.[1] || ''; },
+    set textContent(value) { html = html.replace(/(data-timer-value>)[^<]*(<\/output>)/, `$1${value}$2`); }
+  };
+  const liveRegion = {
+    get textContent() { return html.match(/data-timer-announcement>([^<]*)<\/span>/)?.[1] || ''; },
+    set textContent(value) { announcements += 1; html = html.replace(/(data-timer-announcement>)[^<]*(<\/span>)/, `$1${value}$2`); }
+  };
+  const content = {
+    set innerHTML(value) { html = html.replace(/(<div data-timer-content>)[\s\S]*?(<\/div><span class="visually-hidden" role="status" aria-live="polite" data-timer-announcement>)/, `$1${value}$2`); }
+  };
+  const focusedControl = {};
+  const panel = {
+    dataset: {
+      get phase() { return html.match(/data-draw-timer data-phase="([^"]+)"/)?.[1]; },
+      set phase(value) { html = html.replace(/(data-draw-timer data-phase=")[^"]+/, `$1${value}`); }
+    },
+    contains(element) { return element === focusedControl; },
+    querySelectorAll() { return []; },
+    querySelector(selector) {
+      if (selector === '[data-timer-value]') return html.includes('data-timer-value') ? output : null;
+      if (selector === '[data-timer-announcement]') return liveRegion;
+      if (selector === '[data-timer-content]') return content;
+      if (selector === 'button:not([disabled])') return { focus() { focusRestores += 1; } };
+      return null;
+    }
+  };
+  values.app.querySelector = (selector) => selector === '[data-draw-timer]' && html.includes('data-draw-timer') ? panel : null;
+  return { focusedControl, get renders() { return renders; }, get announcements() { return announcements; }, get focusRestores() { return focusRestores; } };
+}
+
+const countdownIntervals = (values) => [...values.intervals.values()].filter(({ delay }) => delay === 200);
+
+test('抽籤計時位於結果之前、自訂預設收起，操作計時不寫入任何資料', async () => {
+  const { values, monday } = await installWeeklyDrawProfile('timer-controls');
+  openDrawLesson(values, monday);
+  const before = [...values];
+  assert.ok(values.app.innerHTML.indexOf('data-draw-timer') < values.app.innerHTML.indexOf('class="draw-stage"'));
+  assert.doesNotMatch(values.app.innerHTML, /data-timer-wheel=/);
+  clickAction(values, 'timer-custom');
+  assert.match(values.app.innerHTML, /data-timer-wheel="minutes"/);
+  assert.match(values.app.innerHTML, /data-timer-wheel="seconds"/);
+  document.visibilityState = 'visible';
+  values.documentHandlers.visibilitychange();
+  clickAction(values, 'timer-start');
+  assert.match(values.app.innerHTML, /data-timer-value>01:00<\/output>/);
+  clickAction(values, 'timer-end');
+  clickAction(values, 'timer-custom');
+  clickAction(values, 'timer-cancel');
+  assert.doesNotMatch(values.app.innerHTML, /data-timer-wheel=/);
+  clickAction(values, 'timer-preset', { seconds: '30' });
+  assert.match(values.app.innerHTML, /data-timer-value>00:30<\/output>/);
+  assert.equal(countdownIntervals(values).length, 1);
+  clickAction(values, 'timer-preset', { seconds: '60' });
+  assert.match(values.app.innerHTML, /data-timer-value>01:00<\/output>/);
+  assert.equal(countdownIntervals(values).length, 1);
+  clickAction(values, 'timer-pause');
+  assert.match(values.app.innerHTML, /data-action="timer-resume"/);
+  assert.equal(countdownIntervals(values).length, 0);
+  clickAction(values, 'timer-resume');
+  assert.equal(countdownIntervals(values).length, 1);
+  clickAction(values, 'timer-end');
+  assert.equal(countdownIntervals(values).length, 0);
+  assert.match(values.app.innerHTML, /data-draw-timer data-phase="idle"/);
+  assert.deepEqual([...values], before);
+});
+
+test('計時回呼只更新數字，背景返回依實際時間完成並保留焦點及同一播報節點', async () => {
+  const { values, monday } = await installWeeklyDrawProfile('timer-background');
+  openDrawLesson(values, monday);
+  const view = installTimerPanelStub(values);
+  const before = [...values];
+  const originalNow = Date.now;
+  let now = 100_000;
+  Date.now = () => now;
+  try {
+    clickAction(values, 'timer-preset', { seconds: '30' });
+    const firstInterval = countdownIntervals(values)[0].callback;
+    const rendersAfterStart = view.renders;
+    now += 12_345;
+    firstInterval();
+    assert.match(values.app.innerHTML, /data-timer-value>00:18<\/output>/);
+    assert.equal(view.renders, rendersAfterStart);
+    clickAction(values, 'timer-pause');
+    assert.equal(countdownIntervals(values).length, 0);
+    now += 100_000;
+    firstInterval();
+    assert.match(values.app.innerHTML, /data-timer-value>00:18<\/output>/);
+    clickAction(values, 'timer-resume');
+    const rendersAfterResume = view.renders;
+    now += 17_655;
+    document.activeElement = view.focusedControl;
+    document.visibilityState = 'visible';
+    values.documentHandlers.visibilitychange();
+    assert.match(values.app.innerHTML, /data-draw-timer data-phase="done"/);
+    assert.match(values.app.innerHTML, />時間到<\/span>/);
+    assert.equal(view.renders, rendersAfterResume);
+    assert.equal(view.announcements, 1);
+    assert.equal(view.focusRestores, 1);
+    assert.equal(countdownIntervals(values).length, 0);
+    values.documentHandlers.visibilitychange();
+    firstInterval();
+    assert.equal(view.announcements, 1);
+    assert.deepEqual([...values], before);
+  } finally { Date.now = originalNow; document.activeElement = null; clickAction(values, 'back-draw'); }
+});
+
+test('改抽籤選項保留計時，抽籤、新一輪、不在場重抽、離頁與換課都停止計時', async () => {
+  const { values, monday, tuesday } = await installWeeklyDrawProfile('timer-lifecycle');
+  openDrawLesson(values, monday);
+  const start = () => clickAction(values, 'timer-preset', { seconds: '60' });
+  start();
+  clickAction(values, 'toggle-draw-repeat');
+  clickAction(values, 'toggle-draw-weighting');
+  assert.equal(countdownIntervals(values).length, 1);
+  clickAction(values, 'open-draw-sheet', { sheet: 'history' });
+  assert.equal(countdownIntervals(values).length, 1);
+  clickAction(values, 'open-draw');
+  clickAction(values, 'draw-one');
+  assert.equal(countdownIntervals(values).length, 0);
+  start();
+  clickAction(values, 'restart-draw-round');
+  assert.equal(countdownIntervals(values).length, 0);
+  start();
+  clickAction(values, 'absent-redraw');
+  assert.equal(countdownIntervals(values).length, 0);
+  start();
+  clickAction(values, 'back-draw');
+  assert.equal(countdownIntervals(values).length, 0);
+  clickAction(values, 'open-draw');
+  assert.match(values.app.innerHTML, /data-draw-timer data-phase="idle"/);
+  start();
+  openDrawLesson(values, tuesday);
+  assert.equal(countdownIntervals(values).length, 0);
+  assert.match(values.app.innerHTML, /data-draw-timer data-phase="idle"/);
+  for (const session of Object.values(storedClassroom(values).data.drawSessions)) {
+    assert.equal(Object.keys(session).some((key) => /timer|countdown|deadline/i.test(key)), false);
+  }
+});
+
+test('離開文件再由返回快取回來時顯示閒置，不留下假的倒數或重啟已停止計時', async () => {
+  const { values, monday } = await installWeeklyDrawProfile('timer-pagehide');
+  openDrawLesson(values, monday);
+  const view = installTimerPanelStub(values);
+  clickAction(values, 'timer-preset', { seconds: '60' });
+  const staleTick = countdownIntervals(values)[0].callback;
+  values.handlers.pagehide();
+  assert.equal(countdownIntervals(values).length, 0);
+  values.handlers.pageshow();
+  staleTick();
+  assert.match(values.app.innerHTML, /data-draw-timer data-phase="idle"/);
+  assert.equal(countdownIntervals(values).length, 0);
+  assert.equal(view.focusRestores, 0);
+});
 
 function drawPoolRow(values, seat) {
   const row = values.app.innerHTML.match(new RegExp(`<article\\b[^>]*data-draw-pool-seat="${seat}"[^>]*>[\\s\\S]*?<\\/article>`))?.[0];

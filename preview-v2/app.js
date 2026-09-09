@@ -104,7 +104,8 @@ import {
   validateTeachingClassBatchDraft,
   validateTeachingClassDraft,
   weeklyDrawCounts
-} from './core.mjs?v=20260907-weekly-draw-1';
+} from './core.mjs?v=20260909-draw-timer-1';
+import { bindTimerWheels, createCountdown, formatTimerTime, renderCountdownContents, timerDurationSeconds } from './timer.mjs?v=20260909-draw-timer-1';
 
 const app = document.querySelector('#app');
 const TEST_DATA_PROFILE = 'integration-v1';
@@ -506,6 +507,119 @@ const state = {
   draftExamSeatStates: {},
   toast: ''
 };
+
+const drawTimer = createCountdown();
+let drawTimerInterval = null;
+let drawTimerSessionKey = '';
+let drawTimerCustomOpen = false;
+let drawTimerLastPhase = 'idle';
+let drawTimerAnnouncement = '';
+const drawTimerDuration = { minutes: 1, seconds: 0 };
+let releaseDrawTimerWheels = () => {};
+
+function stopDrawTimer() {
+  if (drawTimerInterval !== null) window.clearInterval(drawTimerInterval);
+  drawTimerInterval = null;
+  releaseDrawTimerWheels();
+  releaseDrawTimerWheels = () => {};
+  drawTimer.stop();
+  drawTimerCustomOpen = false;
+  drawTimerSessionKey = '';
+  drawTimerLastPhase = 'idle';
+  drawTimerAnnouncement = '';
+}
+
+function readDrawTimer() {
+  const snapshot = drawTimer.snapshot();
+  if (snapshot.phase === 'done' && drawTimerLastPhase !== 'done') {
+    drawTimerAnnouncement = '時間到，可以抽一位同學。';
+  }
+  if (snapshot.phase !== 'running' && drawTimerInterval !== null) {
+    window.clearInterval(drawTimerInterval);
+    drawTimerInterval = null;
+  }
+  drawTimerLastPhase = snapshot.phase;
+  return snapshot;
+}
+
+function drawTimerContents(snapshot = readDrawTimer()) {
+  return renderCountdownContents(snapshot, { ...drawTimerDuration, customOpen: drawTimerCustomOpen });
+}
+
+function renderDrawTimer() {
+  const snapshot = readDrawTimer();
+  return `<section class="draw-timer" data-draw-timer data-phase="${snapshot.phase}" aria-labelledby="draw-timer-title"><div data-timer-content>${drawTimerContents(snapshot)}</div><span class="visually-hidden" role="status" aria-live="polite" data-timer-announcement>${escapeHtml(drawTimerAnnouncement)}</span></section>`;
+}
+
+function mountDrawTimerWheels() {
+  releaseDrawTimerWheels();
+  releaseDrawTimerWheels = bindTimerWheels(app.querySelector('[data-draw-timer]'), {
+    values: drawTimerDuration,
+    onChange() {
+      const button = app.querySelector('[data-action="timer-start"]');
+      if (button) button.disabled = timerDurationSeconds(drawTimerDuration.minutes, drawTimerDuration.seconds) == null;
+    }
+  });
+}
+
+function syncDrawTimer() {
+  if (state.page !== 'draw' || (drawTimerSessionKey && drawTimerSessionKey !== classroomReminderSessionKey(state.session))) { stopDrawTimer(); return; }
+  const snapshot = readDrawTimer();
+  const panel = app.querySelector('[data-draw-timer]');
+  if (!panel) return;
+  if (panel.dataset.phase !== snapshot.phase) {
+    const restoreFocus = panel.contains(document.activeElement);
+    panel.dataset.phase = snapshot.phase;
+    panel.querySelector('[data-timer-content]').innerHTML = drawTimerContents(snapshot);
+    const announcement = panel.querySelector('[data-timer-announcement]');
+    if (announcement) announcement.textContent = drawTimerAnnouncement;
+    mountDrawTimerWheels();
+    if (restoreFocus) panel.querySelector('button:not([disabled])')?.focus({ preventScroll: true });
+  } else {
+    const value = panel.querySelector('[data-timer-value]');
+    const label = formatTimerTime(snapshot.remainingMs);
+    if (value && value.textContent !== label) value.textContent = label;
+  }
+}
+
+function handleDrawTimerAction(action, target) {
+  if (state.page !== 'draw' || !state.session || target.disabled) return;
+  let focusAction = '';
+  if (action === 'timer-preset' || action === 'timer-start') {
+    const seconds = action === 'timer-preset' ? Number(target.dataset.seconds) : timerDurationSeconds(drawTimerDuration.minutes, drawTimerDuration.seconds);
+    if (seconds == null || !drawTimer.start(seconds)) return;
+    if (drawTimerInterval !== null) window.clearInterval(drawTimerInterval);
+    drawTimerSessionKey = classroomReminderSessionKey(state.session);
+    drawTimerInterval = window.setInterval(syncDrawTimer, 200);
+    drawTimerCustomOpen = false;
+    drawTimerAnnouncement = '開始計時';
+    focusAction = 'timer-pause';
+  } else if (action === 'timer-custom') {
+    if (!['idle', 'done'].includes(drawTimer.snapshot().phase)) return;
+    drawTimerCustomOpen = !drawTimerCustomOpen;
+    drawTimerAnnouncement = '';
+    focusAction = 'timer-custom';
+  } else if (action === 'timer-cancel') {
+    drawTimerCustomOpen = false;
+    focusAction = 'timer-custom';
+  } else if (action === 'timer-pause') {
+    const snapshot = drawTimer.pause();
+    drawTimerAnnouncement = snapshot.phase === 'paused' ? '計時已暫停' : '時間到，可以抽一位同學。';
+    focusAction = snapshot.phase === 'paused' ? 'timer-resume' : 'timer-preset';
+  } else if (action === 'timer-resume') {
+    if (drawTimer.resume().phase !== 'running') return;
+    if (drawTimerInterval !== null) window.clearInterval(drawTimerInterval);
+    drawTimerInterval = window.setInterval(syncDrawTimer, 200);
+    drawTimerAnnouncement = '繼續計時';
+    focusAction = 'timer-pause';
+  } else if (action === 'timer-end') {
+    stopDrawTimer();
+    drawTimerAnnouncement = '計時已結束';
+    focusAction = 'timer-preset';
+  } else return;
+  render();
+  window.requestAnimationFrame(() => app.querySelector(`[data-action="${focusAction}"]`)?.focus({ preventScroll: true }));
+}
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character]);
@@ -3402,6 +3516,7 @@ function renderDraw() {
     <main id="main" class="content draw-content" tabindex="-1">
       ${renderMissingRosterNotice(roster)}
       <div class="draw-title-row"><div><p class="eyebrow">抽籤</p><h1>抽一位同學</h1></div><span class="draw-participants">${participantCount} 人參與</span></div>
+      ${renderDrawTimer()}
       <div class="draw-stage">${renderDrawFocus(pool, participantCount)}${renderDrawRecent()}</div>
       <div class="draw-actions ${currentSeat != null ? 'has-result' : ''}">
         <button type="button" class="primary-button draw-primary" data-action="${primaryAction}" ${noCandidates ? 'disabled' : ''}>${noCandidates ? '目前無人可抽' : primaryLabel}</button>
@@ -3473,6 +3588,7 @@ function renderDrawSheet() {
 }
 
 function render() {
+  if (state.page !== 'draw' || (drawTimerSessionKey && drawTimerSessionKey !== classroomReminderSessionKey(state.session))) stopDrawTimer();
   const page = state.page === 'course'
     ? renderCourse()
     : state.page === 'homework'
@@ -3518,6 +3634,7 @@ function render() {
   const profileBanner = isIntegrationTestData ? '<div class="test-data-banner" role="status">測試資料｜與正式資料分開儲存</div>' : '';
   const storageWarning = homeworkStorageNeedsAttention ? '<div class="storage-warning-banner" role="alert">偵測到無法讀取的本機教學資料；系統沒有覆寫原內容，也不會儲存新的課堂紀錄。請先備份資料，再進行修復。</div>' : '';
   app.innerHTML = `<div class="${shellClass}">${profileBanner}${storageWarning}${page}${bottomNavigation}${modal}${toast}</div>`;
+  mountDrawTimerWheels();
   positionTodaySchedule();
 }
 
@@ -3662,6 +3779,7 @@ function clearReminderInteraction() {
 }
 
 function clearDrawInteraction(sessionKey = '', session = state.session) {
+  stopDrawTimer();
   const activeSeats = activeRosterSeats(session);
   state.drawUseWeighting = true;
   state.drawAllowRepeat = false;
@@ -3780,6 +3898,7 @@ function closeDrawSheet() {
 }
 
 function drawOne(announcementPrefix = '') {
+  stopDrawTimer();
   const pool = currentDrawPool();
   const seat = pickWeightedDrawSeat(pool);
   if (seat == null) {
@@ -3806,6 +3925,7 @@ function drawOne(announcementPrefix = '') {
 }
 
 function absentAndRedraw() {
+  stopDrawTimer();
   const absentSeat = state.drawCurrentSeat;
   if (absentSeat == null) return;
   state.drawHistory = state.drawHistory.map((record, index) => index === 0 ? { ...record, absent: true } : record);
@@ -3886,6 +4006,7 @@ app.addEventListener('click', (event) => {
   if (!target) return;
   if (target.hasAttribute('data-modal-card')) return;
   const action = target.dataset.action;
+  if (action.startsWith('timer-')) { handleDrawTimerAction(action, target); return; }
 
   if (action === 'toggle-record-grade') {
     const { kind, gradeKey } = target.dataset;
@@ -5700,8 +5821,10 @@ window.addEventListener('keydown', (event) => {
   else if (event.key === 'Escape' && state.drawSheet) closeDrawSheet();
 });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') refreshDeviceTime(true);
+  if (document.visibilityState === 'visible') { refreshDeviceTime(true); if (state.page === 'draw') syncDrawTimer(); }
 });
+window.addEventListener('pagehide', stopDrawTimer);
+window.addEventListener('pageshow', () => { if (state.page === 'draw') render(); });
 window.setInterval(() => refreshDeviceTime(false), 60_000);
 
 async function requestAppInstall() {

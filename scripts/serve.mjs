@@ -22,7 +22,8 @@ const staticFiles = new Map([
   ['/preview-v2/index.html', 'preview-v2/index.html'],
   ['/preview-v2/styles.css', 'preview-v2/styles.css'],
   ['/preview-v2/app.js', 'preview-v2/app.js'],
-  ['/preview-v2/core.mjs', 'preview-v2/core.mjs']
+  ['/preview-v2/core.mjs', 'preview-v2/core.mjs'],
+  ['/preview-v2/timer.mjs', 'preview-v2/timer.mjs']
 ]);
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
 
