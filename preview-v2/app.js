@@ -104,8 +104,8 @@ import {
   validateTeachingClassBatchDraft,
   validateTeachingClassDraft,
   weeklyDrawCounts
-} from './core.mjs?v=20260911-timer-scroll-1';
-import { bindTimerWheels, createCountdown, formatTimerTime, renderCountdownContents, timerDurationSeconds } from './timer.mjs?v=20260911-timer-scroll-1';
+} from './core.mjs?v=20260911-class-entry-center-1';
+import { bindTimerWheels, createCountdown, formatTimerTime, renderCountdownContents, timerDurationSeconds } from './timer.mjs?v=20260911-class-entry-center-1';
 
 const app = document.querySelector('#app');
 const TEST_DATA_PROFILE = 'integration-v1';
@@ -2004,7 +2004,7 @@ function renderModal() {
   const overrideKey = scheduleOverrideKey(state.modal.entryDate, slot.id);
   const hasOverride = hasScheduleOverride(scheduleOverrides, overrideKey);
   if (state.modal.mode === 'restore-confirm') {
-    return `<div class="modal-backdrop" data-action="close-modal">
+    return `<div class="modal-backdrop class-entry-backdrop" data-action="close-modal">
       <section class="modal-card confirm-card" role="dialog" aria-modal="true" aria-labelledby="modal-title" data-modal-card>
         <h2 id="modal-title">恢復第 ${slot.period} 節原課表？</h2>
         <p class="restore-confirm-copy">只會恢復這一節的原課表。已建立的作業與考試不會移動或刪除，若安排錯誤請另外取消。</p>
@@ -2019,7 +2019,7 @@ function renderModal() {
       return `<option value="${escapeHtml(record.id)}"${state.modal.teachingClassId === record.id ? ' selected' : ''}>${escapeHtml(label)}</option>`;
     }).join('')}</optgroup>`).join('');
     const hasClasses = groups.some((group) => group.records.length);
-    return `<div class="modal-backdrop" data-action="close-modal">
+    return `<div class="modal-backdrop class-entry-backdrop" data-action="close-modal">
       <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title" data-modal-card>
         <h2 id="modal-title">調整 ${escapeHtml(formatter.format(state.modal.entryDate))}・第 ${slot.period} 節</h2>
         ${hasClasses ? `<label class="managed-schedule-cell-select"><span>改為哪個授課班級</span><select data-action="adjust-teaching-class">${options}</select></label>` : '<p class="restore-confirm-copy">目前沒有授課班級，請先到「設定 → 授課班級」新增。</p>'}
@@ -2028,7 +2028,7 @@ function renderModal() {
     </div>`;
   }
   if (!slot.course) {
-    return `<div class="modal-backdrop" data-action="close-modal">
+    return `<div class="modal-backdrop class-entry-backdrop" data-action="close-modal">
       <section class="modal-card confirm-card" role="dialog" aria-modal="true" aria-labelledby="modal-title" data-modal-card>
         <h2 id="modal-title">第 ${slot.period} 節・空堂</h2>
         <p class="confirm-line">${slot.start}～${slot.end}</p>
@@ -2038,7 +2038,7 @@ function renderModal() {
   }
   const isPastEntry = dateRelation(state.modal.entryDate, state.now) === 'past' || ['past', 'empty-past'].includes(state.modal.entryState);
   const enterLabel = isPastEntry ? '查看／更正' : '確認進入';
-  return `<div class="modal-backdrop" data-action="close-modal">
+  return `<div class="modal-backdrop class-entry-backdrop" data-action="close-modal">
     <section class="modal-card confirm-card" role="dialog" aria-modal="true" aria-labelledby="modal-title" data-modal-card>
       <h2 id="modal-title">${escapeHtml(slot.course.classLabel)}・${escapeHtml(slot.course.subject)}</h2>
       <p class="confirm-line">第 ${slot.period} 節　${slot.start}～${slot.end}${slot.adjusted ? '　已調課' : ''}</p>

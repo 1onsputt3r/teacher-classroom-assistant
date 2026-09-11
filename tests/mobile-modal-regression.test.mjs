@@ -52,3 +52,17 @@ test('今日課堂 modal 的自動聚焦不會捲動頁面', () => {
     );
   }
 });
+
+test('只有進入班級這組視窗改為手機置中，空堂、調課與復原保持一致', () => {
+  const entryModals = appSource.slice(appSource.indexOf('  const slot = selectedSlot();\n  if (!slot) return \'\';'), appSource.indexOf('\nfunction formatDate('));
+  assert.equal((entryModals.match(/class="modal-backdrop class-entry-backdrop"/g) || []).length, 4);
+  assert.equal((appSource.match(/class-entry-backdrop/g) || []).length, 4);
+  for (const action of ['enter-course', 'show-adjust', 'save-adjustment', 'confirm-restore-schedule']) {
+    assert.ok(entryModals.includes(`data-action="${action}"`));
+  }
+  const centeredRule = styles.match(/\.modal-backdrop\.class-entry-backdrop\s*\{[^}]+\}/)?.[0] || '';
+  assert.match(centeredRule, /align-items:\s*center/);
+  const defaultRule = styles.match(/\.modal-backdrop\s*\{[^}]+\}/)?.[0] || '';
+  assert.match(defaultRule, /align-items:\s*flex-end/);
+  assert.match(defaultRule, /justify-content:\s*center/);
+});
