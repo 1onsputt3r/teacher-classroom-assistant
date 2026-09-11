@@ -104,8 +104,8 @@ import {
   validateTeachingClassBatchDraft,
   validateTeachingClassDraft,
   weeklyDrawCounts
-} from './core.mjs?v=20260909-draw-timer-1';
-import { bindTimerWheels, createCountdown, formatTimerTime, renderCountdownContents, timerDurationSeconds } from './timer.mjs?v=20260909-draw-timer-1';
+} from './core.mjs?v=20260911-timer-scroll-1';
+import { bindTimerWheels, createCountdown, formatTimerTime, renderCountdownContents, timerDurationSeconds } from './timer.mjs?v=20260911-timer-scroll-1';
 
 const app = document.querySelector('#app');
 const TEST_DATA_PROFILE = 'integration-v1';
@@ -515,13 +515,13 @@ let drawTimerCustomOpen = false;
 let drawTimerLastPhase = 'idle';
 let drawTimerAnnouncement = '';
 const drawTimerDuration = { minutes: 1, seconds: 0 };
-let releaseDrawTimerWheels = () => {};
+let drawTimerWheels = null;
 
 function stopDrawTimer() {
   if (drawTimerInterval !== null) window.clearInterval(drawTimerInterval);
   drawTimerInterval = null;
-  releaseDrawTimerWheels();
-  releaseDrawTimerWheels = () => {};
+  drawTimerWheels?.destroy();
+  drawTimerWheels = null;
   drawTimer.stop();
   drawTimerCustomOpen = false;
   drawTimerSessionKey = '';
@@ -552,8 +552,8 @@ function renderDrawTimer() {
 }
 
 function mountDrawTimerWheels() {
-  releaseDrawTimerWheels();
-  releaseDrawTimerWheels = bindTimerWheels(app.querySelector('[data-draw-timer]'), {
+  drawTimerWheels?.destroy();
+  drawTimerWheels = bindTimerWheels(app.querySelector('[data-draw-timer]'), {
     values: drawTimerDuration,
     onChange() {
       const button = app.querySelector('[data-action="timer-start"]');
@@ -586,6 +586,7 @@ function handleDrawTimerAction(action, target) {
   if (state.page !== 'draw' || !state.session || target.disabled) return;
   let focusAction = '';
   if (action === 'timer-preset' || action === 'timer-start') {
+    if (action === 'timer-start') drawTimerWheels?.commit();
     const seconds = action === 'timer-preset' ? Number(target.dataset.seconds) : timerDurationSeconds(drawTimerDuration.minutes, drawTimerDuration.seconds);
     if (seconds == null || !drawTimer.start(seconds)) return;
     if (drawTimerInterval !== null) window.clearInterval(drawTimerInterval);

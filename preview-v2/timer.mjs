@@ -37,16 +37,15 @@ export function createCountdown(now = () => Date.now()) {
   };
 }
 
-export function timerWheelValue(startValue, distance, rowHeight, max) {
-  return Math.max(0, Math.min(max, startValue + Math.round(-distance / rowHeight)));
+export function timerWheelValue(scrollTop, rowHeight, max) {
+  return Math.max(0, Math.min(max, Math.round(scrollTop / rowHeight)));
 }
 
 function wheelMarkup(unit, value, max, label) {
-  const rows = [-1, 0, 1].map((offset) => {
-    const candidate = value + offset;
-    return `<span class="timer-wheel-row${offset === 0 ? ' is-selected' : ''}" data-timer-offset="${offset}" aria-hidden="true">${candidate >= 0 && candidate <= max ? String(candidate).padStart(2, '0') : ''}</span>`;
-  }).join('');
-  return `<div class="timer-wheel-field"><span id="timer-${unit}-label">${label}</span><div class="timer-wheel" data-timer-wheel="${unit}" role="spinbutton" tabindex="0" aria-labelledby="timer-${unit}-label" aria-valuemin="0" aria-valuemax="${max}" aria-valuenow="${value}" aria-valuetext="${value} ${label}"><div class="timer-wheel-track">${rows}</div></div></div>`;
+  const rows = Array.from({ length: max + 1 }, (_, candidate) =>
+    `<span class="timer-wheel-row${candidate === value ? ' is-selected' : ''}" data-timer-option="${candidate}" aria-hidden="true">${String(candidate).padStart(2, '0')}</span>`
+  ).join('');
+  return `<div class="timer-wheel-field"><span id="timer-${unit}-label">${label}</span><div class="timer-wheel-frame"><div class="timer-wheel" data-timer-wheel="${unit}" role="spinbutton" tabindex="0" aria-labelledby="timer-${unit}-label" aria-valuemin="0" aria-valuemax="${max}" aria-valuenow="${value}" aria-valuetext="${value} ${label}"><div class="timer-wheel-track">${rows}</div></div></div></div>`;
 }
 
 export function renderCountdownContents({ phase, remainingMs }, { customOpen = false, minutes = 1, seconds = 0 } = {}) {
@@ -58,55 +57,75 @@ export function renderCountdownContents({ phase, remainingMs }, { customOpen = f
     <div id="draw-timer-custom" class="draw-timer-custom" ${customOpen ? '' : 'hidden'}><div class="timer-wheels">${customOpen ? wheelMarkup('minutes', minutes, 99, '分') + wheelMarkup('seconds', seconds, 59, '秒') : ''}</div><div class="draw-timer-custom-actions"><button type="button" data-action="timer-cancel">取消</button><button type="button" class="timer-start" data-action="timer-start" ${timerDurationSeconds(minutes, seconds) == null ? 'disabled' : ''}>開始</button></div></div>`}`;
 }
 
-// Three visible rows, without a keyboard or a long list of focus targets.
-// Pointer, mouse wheel, and keyboard all commit the same displayed value.
+// Touch and trackpad scrolling belong to the browser: native inertia + CSS snap.
+// Keep every row mounted so the numbers follow the finger without being replaced.
 export function bindTimerWheels(panel, { values, onChange }) {
-  if (!panel) return () => {};
-  const cleanups = [];
+  const cleanups = [], commits = [];
+  const controller = {
+    commit() { commits.forEach((commit) => commit()); },
+    destroy() { cleanups.splice(0).forEach((cleanup) => cleanup()); commits.length = 0; }
+  };
+  if (!panel) return controller;
   for (const wheel of panel.querySelectorAll('[data-timer-wheel]')) {
     const unit = wheel.dataset.timerWheel;
     const max = unit === 'minutes' ? 99 : 59;
     const label = unit === 'minutes' ? '分' : '秒';
-    const track = wheel.querySelector('.timer-wheel-track');
-    const rows = [...wheel.querySelectorAll('[data-timer-offset]')];
-    let drag = null, ignoreClickUntil = 0, wheelDistance = 0, lastWheelAt = 0;
-    const rowHeight = () => rows[1].getBoundingClientRect().height || 52;
+    const rows = [...wheel.querySelectorAll('[data-timer-option]')];
+    let drag = null, ignoreClickUntil = 0;
+    const rowHeight = () => rows[0].getBoundingClientRect().height || 52;
+    const visibleValue = () => timerWheelValue(wheel.scrollTop, rowHeight(), max);
     const listen = (type, handler, options) => {
       wheel.addEventListener(type, handler, options);
       cleanups.push(() => wheel.removeEventListener(type, handler, options));
     };
     function select(value) {
       const next = Math.max(0, Math.min(max, Math.round(value)));
+      if (values[unit] === next) return;
+      rows[values[unit]].classList.remove('is-selected');
+      rows[next].classList.add('is-selected');
       values[unit] = next;
       wheel.setAttribute('aria-valuenow', String(next));
       wheel.setAttribute('aria-valuetext', `${next} ${label}`);
-      for (const row of rows) {
-        const candidate = next + Number(row.dataset.timerOffset);
-        row.textContent = candidate < 0 || candidate > max ? '' : String(candidate).padStart(2, '0');
-      }
       onChange();
+    }
+    function scrollToValue(value, smooth = false) {
+      const next = Math.max(0, Math.min(max, Math.round(value)));
+      const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      const animate = smooth && !reducedMotion;
+      wheel.scrollTo({ top: next * rowHeight(), behavior: animate ? 'smooth' : 'instant' });
+      if (!animate) select(next);
     }
     function finish(event) {
       if (!drag || drag.id !== event.pointerId) return;
-      if (drag.moved) ignoreClickUntil = Date.now() + 250;
+      const moved = drag.moved;
+      if (moved) ignoreClickUntil = Date.now() + 250;
       drag = null;
-      track.style.transform = '';
+      wheel.style.scrollSnapType = '';
       if (wheel.hasPointerCapture(event.pointerId)) wheel.releasePointerCapture(event.pointerId);
+      if (moved) scrollToValue(visibleValue(), true);
     }
+    scrollToValue(values[unit]);
+    // Read the actual centered row during inertia, without forcing a scroll/snap.
+    listen('scroll', () => select(visibleValue()), { passive: true });
+    // Before Start, flush any not-yet-delivered scroll event and stop inertia.
+    commits.push(() => scrollToValue(visibleValue()));
     listen('pointerdown', (event) => {
-      if (event.button !== 0 || !event.isPrimary) return;
-      drag = { id: event.pointerId, y: event.clientY, value: values[unit], moved: false };
+      // Only a mouse needs emulated dragging. Never capture/cancel a touch pan.
+      if (event.pointerType !== 'mouse' || event.button !== 0 || !event.isPrimary) return;
+      ignoreClickUntil = 0;
+      drag = { id: event.pointerId, y: event.clientY, top: wheel.scrollTop, moved: false };
     });
     listen('pointermove', (event) => {
       if (!drag || drag.id !== event.pointerId) return;
       const distance = event.clientY - drag.y;
-      if (Math.abs(distance) > 5 && !drag.moved) { drag.moved = true; wheel.setPointerCapture(event.pointerId); }
+      if (Math.abs(distance) > 5 && !drag.moved) {
+        drag.moved = true;
+        wheel.style.scrollSnapType = 'none';
+        wheel.setPointerCapture(event.pointerId);
+      }
       if (!drag.moved) return;
-      const height = rowHeight();
-      const step = Math.round(-distance / height);
-      select(timerWheelValue(drag.value, distance, height, max));
-      const outside = drag.value + step < 0 || drag.value + step > max;
-      track.style.transform = `translateY(${outside ? 0 : distance + step * height}px)`;
+      wheel.scrollTop = Math.max(0, Math.min(max * rowHeight(), drag.top - distance));
+      select(visibleValue());
     });
     listen('pointerup', finish);
     listen('pointercancel', finish);
@@ -114,26 +133,24 @@ export function bindTimerWheels(panel, { values, onChange }) {
     listen('pointerleave', (event) => { if (drag && !drag.moved) finish(event); });
     listen('click', (event) => {
       if (Date.now() < ignoreClickUntil) return;
-      const row = event.target.closest('[data-timer-offset]');
-      if (row && row.textContent) select(values[unit] + Number(row.dataset.timerOffset));
+      const row = event.target.closest('[data-timer-option]');
+      if (row) scrollToValue(Number(row.dataset.timerOption), true);
     });
-    listen('wheel', (event) => {
-      event.preventDefault();
-      if (Date.now() - lastWheelAt > 180) wheelDistance = 0;
-      lastWheelAt = Date.now();
-      wheelDistance += event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rowHeight() * 3 : 1);
-      const steps = Math.trunc(wheelDistance / 40);
-      if (steps) { select(values[unit] + steps); wheelDistance -= steps * 40; }
-    }, { passive: false });
     listen('keydown', (event) => {
       const steps = { ArrowUp: 1, ArrowDown: -1, PageUp: 5, PageDown: -5 };
-      if (Object.hasOwn(steps, event.key)) { event.preventDefault(); select(values[unit] + steps[event.key]); }
-      else if (event.key === 'Home' || event.key === 'End') { event.preventDefault(); select(event.key === 'Home' ? 0 : max); }
+      if (Object.hasOwn(steps, event.key)) { event.preventDefault(); scrollToValue(visibleValue() + steps[event.key]); }
+      else if (event.key === 'Home' || event.key === 'End') { event.preventDefault(); scrollToValue(event.key === 'Home' ? 0 : max); }
     });
+    // Re-align after browser text-size/viewport changes using the measured row.
+    const resizeObserver = globalThis.ResizeObserver ? new ResizeObserver(() => scrollToValue(values[unit])) : null;
+    resizeObserver?.observe(wheel);
     cleanups.push(() => {
-      if (drag && wheel.hasPointerCapture(drag.id)) wheel.releasePointerCapture(drag.id);
+      resizeObserver?.disconnect();
+      const pointerId = drag?.id;
       drag = null;
+      wheel.style.scrollSnapType = '';
+      if (pointerId != null && wheel.hasPointerCapture(pointerId)) wheel.releasePointerCapture(pointerId);
     });
   }
-  return () => cleanups.forEach((cleanup) => cleanup());
+  return controller;
 }

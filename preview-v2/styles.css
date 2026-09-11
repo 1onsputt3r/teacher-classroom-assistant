@@ -387,11 +387,13 @@ body:has(.reminder-sheet-backdrop) { overflow: hidden; }
 .draw-timer [hidden] { display: none !important; }
 .timer-wheels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .timer-wheel-field > span { display: block; margin-bottom: 6px; text-align: center; font-size: 1rem; }
-.timer-wheel { position: relative; height: 9.75rem; border-radius: 12px; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; cursor: ns-resize; }
+.timer-wheel-frame { --timer-row-height: 3.25rem; position: relative; border-radius: 12px; }
+.timer-wheel { position: relative; height: calc(3 * var(--timer-row-height)); border-radius: 12px; overflow-x: hidden; overflow-y: auto; scroll-snap-type: y mandatory; overscroll-behavior-y: contain; touch-action: pan-y pinch-zoom; -webkit-overflow-scrolling: touch; scrollbar-width: none; user-select: none; -webkit-user-select: none; cursor: ns-resize; }
+.timer-wheel::-webkit-scrollbar { display: none; }
 .timer-wheel:focus-visible { outline: 3px solid rgba(37, 103, 89, .34); outline-offset: 2px; }
-.timer-wheel::before { position: absolute; content: ''; top: 3.25rem; left: 0; right: 0; height: 3.25rem; background: var(--brand-soft); border-radius: 12px; pointer-events: none; }
-.timer-wheel-track { position: relative; }
-.timer-wheel-row { height: 3.25rem; display: grid; place-items: center; font-size: 1.5rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.timer-wheel-frame::before { position: absolute; content: ''; top: var(--timer-row-height); left: 0; right: 0; height: var(--timer-row-height); background: var(--brand-soft); border-radius: 12px; pointer-events: none; }
+.timer-wheel-track { position: relative; padding-block: var(--timer-row-height); }
+.timer-wheel-row { height: var(--timer-row-height); display: grid; place-items: center; scroll-snap-align: center; font-size: 1.5rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 .timer-wheel-row.is-selected { color: var(--brand-dark); font-size: 1.875rem; font-weight: 800; }
 .draw-timer-custom-actions { display: grid; grid-template-columns: 1fr 1.5fr; gap: 8px; margin-top: 14px; }
 .draw-timer .timer-start { background: var(--brand); color: white; border-color: var(--brand); font-weight: 750; }

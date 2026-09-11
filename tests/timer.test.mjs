@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { bindTimerWheels, createCountdown, formatTimerTime, renderCountdownContents, timerDurationSeconds, timerWheelValue } from '../preview-v2/timer.mjs';
 
 test('計時只接受 1 秒到 99 分 59 秒，不接受空白、負數或小數', () => {
@@ -80,6 +81,8 @@ test('自訂滾輪預設收起、明確展開才顯示分秒，零秒不可開�
   assert.match(open, /role="spinbutton" tabindex="0"[^>]*aria-valuemax="99"/);
   assert.match(open, /role="spinbutton" tabindex="0"[^>]*aria-valuemax="59"/);
   assert.match(open, /data-action="timer-start" disabled/);
+  assert.equal((open.match(/data-timer-option=/g) || []).length, 160);
+  assert.doesNotMatch(open, /data-timer-value=/); // Reserved for the countdown output.
   assert.doesNotMatch(open, /<input|討論計時/);
   const running = renderCountdownContents({ phase: 'running', remainingMs: 90_000 }, { customOpen: true });
   assert.match(running, />01:30<\/output>/);
@@ -94,63 +97,115 @@ function wheelFixture({ rowHeight = 52, minutes = 1, seconds = 0 } = {}) {
   let changes = 0;
   const wheels = ['minutes', 'seconds'].map((unit) => {
     const listeners = new Map(), attrs = new Map(), captured = new Set();
-    const rows = [-1, 0, 1].map((offset) => ({
-      dataset: { timerOffset: String(offset) }, textContent: String(values[unit] + offset),
+    const rows = Array.from({ length: unit === 'minutes' ? 100 : 60 }, (_, value) => ({
+      dataset: { timerOption: String(value) }, textContent: String(value).padStart(2, '0'),
+      classList: new Set(value === values[unit] ? ['is-selected'] : []),
       getBoundingClientRect() { return { height: rowHeight }; },
-      closest(selector) { return selector === '[data-timer-offset]' ? this : null; }
+      closest(selector) { return selector === '[data-timer-option]' ? this : null; }
     }));
-    const track = { style: {} };
+    for (const row of rows) row.classList.remove = row.classList.delete;
     return {
-      dataset: { timerWheel: unit }, listeners, attrs, captured, rows, track,
-      querySelector: () => track, querySelectorAll: () => rows,
+      dataset: { timerWheel: unit }, listeners, attrs, captured, rows, style: {},
+      scrollTop: 0, scrollCalls: [], pendingScroll: null,
+      querySelectorAll: () => rows,
       addEventListener(type, fn) { listeners.set(type, fn); },
       removeEventListener(type, fn) { if (listeners.get(type) === fn) listeners.delete(type); },
       setAttribute(key, value) { attrs.set(key, value); },
       setPointerCapture(id) { captured.add(id); },
       releasePointerCapture(id) { captured.delete(id); },
       hasPointerCapture(id) { return captured.has(id); },
-      fire(type, event = {}) { listeners.get(type)?.({ button: 0, isPrimary: true, pointerId: 1, preventDefault() {}, ...event }); }
+      scrollTo(options) {
+        this.scrollCalls.push(options);
+        this.pendingScroll = options.behavior === 'smooth' ? options.top : null;
+        if (this.pendingScroll === null) this.scrollTop = options.top;
+      },
+      nativeScroll(top) { this.scrollTop = top; this.fire('scroll'); },
+      finishSmooth() { const top = this.pendingScroll; this.pendingScroll = null; this.nativeScroll(top); },
+      fire(type, event = {}) { listeners.get(type)?.({ button: 0, isPrimary: true, pointerType: 'mouse', pointerId: 1, preventDefault() {}, ...event }); }
     };
   });
-  const release = bindTimerWheels({ querySelectorAll: () => wheels }, { values, onChange() { changes += 1; } });
-  return { values, wheels, release, get changes() { return changes; } };
+  const controller = bindTimerWheels({ querySelectorAll: () => wheels }, { values, onChange() { changes += 1; } });
+  return { values, wheels, controller, get changes() { return changes; } };
 }
 
-test('滾輪可上下拖動，放開後以中央數值為準且抑制滑動帶出的點擊', () => {
+test('原生滑動只同步中央數值，不重寫數字、不強制捲動或攔截觸控', () => {
+  const fixture = wheelFixture();
+  const seconds = fixture.wheels[1];
+  const originalText = seconds.rows.map((row) => row.textContent);
+  seconds.scrollCalls.length = 0;
+  seconds.fire('pointerdown', { clientY: 200, pointerType: 'touch' });
+  seconds.fire('pointermove', { clientY: 96, pointerType: 'touch' });
+  seconds.fire('pointercancel', { pointerType: 'touch' });
+  assert.equal(seconds.captured.size, 0);
+  assert.equal(seconds.listeners.has('touchmove'), false);
+  assert.equal(seconds.listeners.has('wheel'), false);
+  seconds.nativeScroll(2.35 * 52);
+  assert.equal(fixture.values.seconds, 2);
+  assert.equal(seconds.attrs.get('aria-valuenow'), '2');
+  assert.equal(seconds.rows[2].classList.has('is-selected'), true);
+  seconds.nativeScroll(4 * 52); // Browser inertia/snap settles later.
+  assert.deepEqual(fixture.values, { minutes: 1, seconds: 4 });
+  assert.equal(seconds.rows[2].classList.has('is-selected'), false);
+  assert.equal(seconds.rows[4].classList.has('is-selected'), true);
+  assert.deepEqual(seconds.rows.map((row) => row.textContent), originalText);
+  assert.equal(seconds.scrollCalls.length, 0);
+  fixture.controller.destroy();
+});
+
+test('滾輪從原設定位置開始，實際列高與邊界正確，兩欄可分別點選', () => {
+  const fixture = wheelFixture({ rowHeight: 104, minutes: 99, seconds: 58 });
+  const seconds = fixture.wheels[1];
+  assert.equal(seconds.scrollTop, 58 * 104);
+  assert.equal(fixture.wheels[0].scrollTop, 99 * 104);
+  seconds.nativeScroll(60 * 104); // Clamp overscroll/bounce.
+  assert.deepEqual(fixture.values, { minutes: 99, seconds: 59 });
+  seconds.nativeScroll(-104);
+  assert.equal(fixture.values.seconds, 0);
+  fixture.wheels[0].fire('click', { target: fixture.wheels[0].rows[98] });
+  assert.deepEqual(fixture.wheels[0].scrollCalls.at(-1), { top: 98 * 104, behavior: 'smooth' });
+  fixture.wheels[0].finishSmooth();
+  assert.equal(fixture.values.minutes, 98);
+  assert.equal(fixture.values.seconds, 0);
+  assert.equal(timerWheelValue(-100, 52, 59), 0);
+  assert.equal(timerWheelValue(6000, 52, 59), 59);
+  fixture.controller.destroy();
+});
+
+test('按開始前同步未送達的捲動位置並停止慣性，不用舊的設定值', () => {
+  const fixture = wheelFixture({ minutes: 0, seconds: 30 });
+  const seconds = fixture.wheels[1];
+  seconds.scrollTop = 12.7 * 52; // Scroll event has not reached JS yet.
+  assert.equal(fixture.values.seconds, 30);
+  fixture.controller.commit();
+  assert.equal(fixture.values.seconds, 13);
+  assert.equal(seconds.scrollTop, 13 * 52);
+  assert.deepEqual(seconds.scrollCalls.at(-1), { top: 13 * 52, behavior: 'instant' });
+  seconds.scrollTop = 0;
+  fixture.controller.commit();
+  assert.equal(timerDurationSeconds(fixture.values.minutes, fixture.values.seconds), null);
+  fixture.controller.destroy();
+  fixture.controller.commit(); // Detached wheels must not be touched again.
+});
+
+test('滑鼠仍可拖動、放開後對齊，拖動後不會額外點選下一個數字', () => {
   const fixture = wheelFixture();
   const seconds = fixture.wheels[1];
   seconds.fire('pointerdown', { clientY: 200 });
-  seconds.fire('pointermove', { clientY: 96 });
+  seconds.fire('pointermove', { clientY: 75 });
+  assert.equal(seconds.style.scrollSnapType, 'none');
+  assert.equal(seconds.scrollTop, 125);
   assert.equal(fixture.values.seconds, 2);
-  assert.equal(seconds.attrs.get('aria-valuenow'), '2');
-  assert.equal(seconds.rows[1].textContent, '02');
-  seconds.fire('pointerup', { clientY: 96 });
-  seconds.fire('click', { target: seconds.rows[2] });
-  assert.equal(fixture.values.seconds, 2);
-  assert.equal(seconds.track.style.transform, '');
+  seconds.fire('pointerup', { clientY: 75 });
+  assert.deepEqual(seconds.scrollCalls.at(-1), { top: 104, behavior: 'smooth' });
+  assert.equal(seconds.style.scrollSnapType, '');
   assert.equal(seconds.captured.size, 0);
-  fixture.release();
+  seconds.fire('click', { target: seconds.rows[3] });
+  seconds.finishSmooth();
+  assert.equal(fixture.values.seconds, 2);
+  fixture.controller.destroy();
 });
 
-test('滾輪取實際列高、只改本欄、支援點選及滑鼠滾輪，數值不超界', () => {
-  const fixture = wheelFixture({ rowHeight: 104, minutes: 99, seconds: 58 });
-  const seconds = fixture.wheels[1];
-  seconds.fire('pointerdown', { clientY: 300 });
-  seconds.fire('pointermove', { clientY: 196 });
-  seconds.fire('pointercancel');
-  assert.deepEqual(fixture.values, { minutes: 99, seconds: 59 });
-  seconds.fire('wheel', { deltaY: 4000, deltaMode: 0 });
-  assert.equal(fixture.values.seconds, 59);
-  seconds.fire('wheel', { deltaY: -4000, deltaMode: 0 });
-  assert.equal(fixture.values.seconds, 0);
-  fixture.wheels[0].fire('click', { target: fixture.wheels[0].rows[0] });
-  assert.equal(fixture.values.minutes, 98);
-  assert.equal(timerWheelValue(0, 100, 52, 59), 0);
-  assert.equal(timerWheelValue(58, -520, 52, 59), 59);
-  fixture.release();
-});
-
-test('滾輪可用鍵盤並忽略非主要指標，卸載時移除監聽與指標捕捉', () => {
+test('滾輪支援鍵盤並忽略非主要指標，卸載時移除監聽與指標捕捉', () => {
   const fixture = wheelFixture();
   const minutes = fixture.wheels[0];
   minutes.fire('keydown', { key: 'End' });
@@ -167,7 +222,21 @@ test('滾輪可用鍵盤並忽略非主要指標，卸載時移除監聽與指�
   minutes.fire('pointerdown', { clientY: 200 });
   minutes.fire('pointermove', { clientY: 100 });
   assert.equal(minutes.captured.size, 1);
-  fixture.release();
+  fixture.controller.destroy();
   assert.equal(minutes.captured.size, 0);
   assert.equal(minutes.listeners.size, 0);
+  fixture.controller.destroy();
+});
+
+test('手機滾輪使用可捲動清單與置中吸附，綠底不跟著捲動', async () => {
+  const css = await readFile(new URL('../preview-v2/styles.css', import.meta.url), 'utf8');
+  const wheel = css.match(/\.timer-wheel \{([^}]+)\}/)[1];
+  assert.match(wheel, /overflow-y: auto/);
+  assert.match(wheel, /touch-action: pan-y pinch-zoom/);
+  assert.match(wheel, /scroll-snap-type: y mandatory/);
+  assert.match(wheel, /overscroll-behavior-y: contain/);
+  assert.doesNotMatch(wheel, /touch-action: none|overflow: hidden/);
+  assert.match(css, /\.timer-wheel-frame::before/);
+  assert.match(css, /\.timer-wheel-track \{[^}]*padding-block: var\(--timer-row-height\)/);
+  assert.match(css, /\.timer-wheel-row \{[^}]*scroll-snap-align: center/);
 });
